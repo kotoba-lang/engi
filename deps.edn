@@ -1,0 +1,27 @@
+;; engi — ENGI/EN mutual-credit ledger over kotobase.net (ADR-2607101100).
+;;
+;; `src/engi/core.cljc` is the ONLY portable part (pure, no I/O, no crypto —
+;; runs identically under `clojure -M:test` and cljs). `engi.crypto` /
+;; `engi.store` / `engi.protocol` are cljs-only: they depend on
+;; `kotoba-lang/kotobase-client` (the canonical kotobase.net Datom-plane
+;; client this org already uses everywhere else), which itself is cljs-only
+;; (npm `@noble/curves`/`@noble/hashes`/`@ipld/dag-cbor` — the SAME crypto
+;; stack every other kotobase.net writer in this org uses; no second,
+;; divergent `kotoba-lang/ed25519` JVM dependency is introduced here).
+{:paths ["src"]
+ :deps {io.github.kotoba-lang/kotobase-client
+        {:git/url "https://github.com/kotoba-lang/kotobase-client.git"
+         :git/sha "bbebe33d6888c915b64b32e5fc68720fac3aa97e"}}
+ :aliases
+ {;; JVM tests -- only `engi.core-test` (the pure `.cljc` core) runs here;
+  ;; the crypto/store/protocol/live tests are `.cljs` (need npm deps) and
+  ;; are picked up by shadow-cljs's :node-test instead (`npm run test:cljs`).
+  :test {:extra-paths ["test"]
+         :extra-deps {io.github.cognitect-labs/test-runner
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :main-opts ["-m" "cognitect.test-runner"]}
+
+  ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
+  :lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
+         :main-opts ["-m" "clj-kondo.main" "--lint" "src" "test" "live-test"
+                     "--fail-level" "error"]}}}

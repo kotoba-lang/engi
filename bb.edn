@@ -1,0 +1,7 @@
+{:tasks
+ {test {:doc "Run engi's pure-core JVM tests (engi.core-test)."
+        :task (shell "clojure -M:test")}
+  test-cljs {:doc "Run engi's cljs unit+protocol tests (fake client, no network)."
+             :task (shell "npm run test:cljs")}
+  test-live {:doc "Run engi's LIVE kotobase.net integration test (real network, throwaway did:key agents)."
+             :task (shell "npm run test:live")}}}

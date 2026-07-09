@@ -1,0 +1,18 @@
+{
+  "name": "engi",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ENGI/EN mutual-credit ledger over kotobase.net (ADR-2607101100). cljs unit/protocol tests (fake client) + a separate, NOT-in-CI live integration test against production kotobase.net.",
+  "scripts": {
+    "test:cljs": "bb gen-shadow-cljs-edn.bb && shadow-cljs compile test && node out/test.js",
+    "test:live": "bb gen-shadow-cljs-edn.bb && shadow-cljs compile live-test && node out/live-test.js"
+  },
+  "dependencies": {
+    "@ipld/dag-cbor": "^9.2.0",
+    "@noble/curves": "^1.9.0",
+    "@noble/hashes": "^1.8.0"
+  },
+  "devDependencies": {
+    "shadow-cljs": "^2.28.20"
+  }
+}
