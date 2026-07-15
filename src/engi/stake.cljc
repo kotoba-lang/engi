@@ -11,8 +11,21 @@
   token), so bonding EN would give zero real economic disincentive against
   misbehavior. This ns is agnostic to WHICH external asset/chain custodies
   the bond — it just consumes an already-verified `{witness-did ->
-  bonded-amount}` map; wiring that map to a real escrow contract is
-  out of scope here (ADR-2607994000 Decision #1).
+  {:amount N :roles #{...}}}` map; wiring that map to a real escrow
+  contract is out of scope here (ADR-2607994000 Decision #1).
+
+  Bond records carry a `:roles` set (ADR-2607995000 §5 — the unified
+  witness market): `:ordering` (engi/L1 block-consensus voting, this ns's
+  own domain) and/or `:recompute` (proof-of-compute sample recompute, a
+  different ns/domain entirely — cloud-murakumo's `verify/compute.cljc`).
+  ONE bond market, self-selected roles, instead of two separate staking
+  markets for two physically-different node populations (Mac-mini-class
+  ordering witnesses vs. GPU-class recompute witnesses) — bond, unbond
+  delay, slashing, and governance are all shared; only which duty a
+  witness is eligible for differs. Role-filtering happens entirely in
+  `eligible-witnesses`'s 3-arity — every other fn here (`stake-qc`,
+  `slash`, ...) is role-agnostic: it just operates on whatever witness
+  coll/bond-record the caller already filtered by role.
 
   Admission (`eligible-witnesses`) is permissionless: meeting the bond
   threshold is the ONLY requirement, no existing-witness vote. Quorum
@@ -34,24 +47,48 @@
   skip building a slashing-dispute/appeal system entirely (ADR-2607994000
   Decision #5).")
 
+;; ── bond-record accessors ────────────────────────────────────────────────────
+
+(defn bond-amount
+  "The bonded amount for `did` in `bonds` ({witness-did -> {:amount N :roles
+  #{...}}}) — 0 if `did` has no bond record at all."
+  [bonds did]
+  (get-in bonds [did :amount] 0))
+
+(defn bond-roles
+  "The role set for `did` in `bonds` — #{} if `did` has no bond record or no
+  `:roles` key."
+  [bonds did]
+  (get-in bonds [did :roles] #{}))
+
 ;; ── admission (permissionless) ───────────────────────────────────────────────
 
 (defn eligible-witnesses
-  "Given `bonds` ({witness-did -> bonded-amount}) and `min-bond`, return the
-  set of DIDs eligible to be witnesses THIS epoch. No existing-witness
-  approval is consulted — meeting the bond threshold is the only
-  requirement, which is the entire point: com-junkawasaki (or anyone else
-  currently bonded) has no protocol-level say over who else may bond."
-  [bonds min-bond]
-  (into #{} (keep (fn [[did amt]] (when (>= amt min-bond) did))) bonds))
+  "Given `bonds` ({witness-did -> {:amount N :roles #{...}}}) and `min-bond`,
+  return the set of DIDs eligible to be witnesses THIS epoch. No
+  existing-witness approval is consulted — meeting the bond threshold is
+  the only requirement, which is the entire point: com-junkawasaki (or
+  anyone else currently bonded) has no protocol-level say over who else may
+  bond.
+
+  3-arity: also require `role` to be present in the DID's `:roles` set —
+  this is how the single shared bond market (ADR-2607995000 §5) produces a
+  per-duty witness set (e.g. `(eligible-witnesses bonds min-bond
+  :ordering)` for engi/L1 block consensus, `(eligible-witnesses bonds
+  min-bond :recompute)` for proof-of-compute) without needing two separate
+  bond maps."
+  ([bonds min-bond]
+   (into #{} (keep (fn [[did {:keys [amount]}]] (when (>= (or amount 0) min-bond) did))) bonds))
+  ([bonds min-bond role]
+   (into #{} (filter #(contains? (bond-roles bonds %) role)) (eligible-witnesses bonds min-bond))))
 
 ;; ── stake-weighted quorum ────────────────────────────────────────────────────
 
 (defn total-stake
-  "Sum of `bonds` across `witnesses` (a coll of DIDs) — 0 for any DID not in
-  `bonds`."
+  "Sum of `bonds`' `:amount`s across `witnesses` (a coll of DIDs) — 0 for any
+  DID not in `bonds`."
   [bonds witnesses]
-  (reduce + 0 (map #(get bonds % 0) witnesses)))
+  (reduce + 0 (map #(bond-amount bonds %) witnesses)))
 
 (defn stake-quorum-met?
   "STAKE-weighted quorum: do the DIDs in `voted` (a set/coll of witness DIDs
@@ -142,26 +179,33 @@
 ;; ── slashing (equivocation only) ─────────────────────────────────────────────
 
 (defn slash
-  "Remove `offending-witness`'s ENTIRE bond from `bonds` and return
-  `{:bonds :burned :rewarded}`. `burn-fraction` + `whistleblower-fraction`
-  (default 0.95/0.05, ADR-2607994000's illustrative split) must sum to 1.0.
-  `credit-to` (optional — the DID that submitted the verified evidence) is
-  credited `:rewarded` in the returned `bonds` map; omit it to report the
-  numbers without crediting anyone (e.g. when the caller settles the reward
-  via a different ledger). Does NOT call `verify-equivocation-evidence`
-  itself — a caller must verify before slashing; this fn trusts its input,
-  mirroring `engi.core/next-entry`'s division of labor (building vs.
-  validating are separate steps)."
+  "Remove `offending-witness`'s ENTIRE bond RECORD (amount + roles) from
+  `bonds` and return `{:bonds :burned :rewarded}`. `burn-fraction` +
+  `whistleblower-fraction` (default 0.95/0.05, ADR-2607994000's
+  illustrative split) must sum to 1.0. `credit-to` (optional — the DID
+  that submitted the verified evidence) has `:rewarded` added to its
+  `:amount` in the returned `bonds` map (a fresh record with empty
+  `:roles` is created if `credit-to` had no prior bond — crediting a
+  reward does not implicitly grant witness roles); omit `credit-to` to
+  report the numbers without crediting anyone (e.g. when the caller
+  settles the reward via a different ledger). Does NOT call
+  `verify-equivocation-evidence` itself — a caller must verify before
+  slashing; this fn trusts its input, mirroring `engi.core/next-entry`'s
+  division of labor (building vs. validating are separate steps)."
   [bonds offending-witness {:keys [burn-fraction whistleblower-fraction credit-to]
                              :or {burn-fraction 0.95 whistleblower-fraction 0.05}}]
   (when-not (== 1.0 (+ burn-fraction whistleblower-fraction))
     (throw (ex-info "slash: burn-fraction + whistleblower-fraction must sum to 1.0"
                      {:burn-fraction burn-fraction :whistleblower-fraction whistleblower-fraction})))
-  (let [bond (get bonds offending-witness 0)
+  (let [bond (bond-amount bonds offending-witness)
         reward (* bond whistleblower-fraction)
         burned (* bond burn-fraction)
         bonds' (dissoc bonds offending-witness)]
-    {:bonds (if credit-to (update bonds' credit-to (fnil + 0) reward) bonds')
+    {:bonds (if credit-to
+              (-> bonds'
+                  (update-in [credit-to :amount] (fnil + 0) reward)
+                  (update-in [credit-to :roles] (fnil identity #{})))
+              bonds')
      :burned burned
      :rewarded (if credit-to reward 0)}))
 

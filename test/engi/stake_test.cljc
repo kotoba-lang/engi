@@ -7,27 +7,55 @@
             #?(:clj [clojure.test :refer [deftest is]]
                :cljs [cljs.test :refer-macros [deftest is]])))
 
+(defn- bond
+  "Test helper: build a bond record `{:amount amount :roles (set roles)}`."
+  [amount & roles]
+  {:amount amount :roles (set roles)})
+
+;; ── bond-record accessors ────────────────────────────────────────────────────
+
+(deftest bond-amount-and-bond-roles-read-the-record
+  (let [bonds {"w1" (bond 500 :ordering :recompute)}]
+    (is (= 500 (stake/bond-amount bonds "w1")))
+    (is (= #{:ordering :recompute} (stake/bond-roles bonds "w1")))))
+
+(deftest bond-amount-and-bond-roles-default-for-unknown-did
+  (is (= 0 (stake/bond-amount {} "unknown")))
+  (is (= #{} (stake/bond-roles {} "unknown"))))
+
 ;; ── admission ────────────────────────────────────────────────────────────────
 
 (deftest eligible-witnesses-filters-by-bond-threshold
-  (let [bonds {"w1" 500 "w2" 250 "w3" 500 "w4" 100}]
+  (let [bonds {"w1" (bond 500 :ordering) "w2" (bond 250 :ordering)
+               "w3" (bond 500 :ordering) "w4" (bond 100 :ordering)}]
     (is (= #{"w1" "w3"} (stake/eligible-witnesses bonds 500)))))
 
 (deftest eligible-witnesses-no-approval-needed-just-the-threshold
   ;; the whole point: any DID meeting the bond appears, regardless of who
   ;; else is already in `bonds` -- there is no "existing member votes to
   ;; admit" step anywhere in this fn's signature.
-  (let [bonds {"incumbent" 10000 "newcomer" 500}]
+  (let [bonds {"incumbent" (bond 10000 :ordering) "newcomer" (bond 500 :ordering)}]
     (is (contains? (stake/eligible-witnesses bonds 500) "newcomer"))))
+
+(deftest eligible-witnesses-3-arity-filters-by-role
+  ;; the single shared bond market (ADR-2607995000 §5): one bond map, two
+  ;; duties, self-selected roles -- no second staking market needed.
+  (let [bonds {"orderer-only" (bond 1000 :ordering)
+               "recompute-only" (bond 1000 :recompute)
+               "both" (bond 1000 :ordering :recompute)
+               "under-threshold" (bond 100 :ordering :recompute)}]
+    (is (= #{"orderer-only" "both"} (stake/eligible-witnesses bonds 500 :ordering)))
+    (is (= #{"recompute-only" "both"} (stake/eligible-witnesses bonds 500 :recompute)))))
 
 ;; ── stake-weighted quorum ────────────────────────────────────────────────────
 
 (deftest total-stake-sums-and-defaults-missing-to-zero
-  (is (= 300 (stake/total-stake {"w1" 100 "w2" 200} ["w1" "w2"])))
-  (is (= 100 (stake/total-stake {"w1" 100} ["w1" "unknown"]))))
+  (is (= 300 (stake/total-stake {"w1" (bond 100 :ordering) "w2" (bond 200 :ordering)} ["w1" "w2"])))
+  (is (= 100 (stake/total-stake {"w1" (bond 100 :ordering)} ["w1" "unknown"]))))
 
 (deftest stake-quorum-unequal-stakes-one-large-holder-plus-one-small-meets-quorum
-  (let [bonds {"big" 700 "small1" 100 "small2" 100 "small3" 100}
+  (let [bonds {"big" (bond 700 :ordering) "small1" (bond 100 :ordering)
+               "small2" (bond 100 :ordering) "small3" (bond 100 :ordering)}
         witnesses (keys bonds)]
     (is (true? (stake/stake-quorum-met? #{"big" "small1"} bonds witnesses))
         "700+100=800 > 2/3 of 1000")
@@ -39,20 +67,22 @@
   ;; the SUM a voting coalition controls is identical either way, which is
   ;; exactly the property that makes stake-weighting Sybil-resistant where
   ;; witness-count-based quorum is not.
-  (let [one-holder {"w" 1000}
-        ten-holders (into {} (map (fn [i] [(str "w" i) 100]) (range 10)))]
+  (let [one-holder {"w" (bond 1000 :ordering)}
+        ten-holders (into {} (map (fn [i] [(str "w" i) (bond 100 :ordering)]) (range 10)))]
     (is (= (stake/total-stake one-holder ["w"])
            (stake/total-stake ten-holders (keys ten-holders))))))
 
 (deftest stake-qc-forms-once-stake-quorum-met
-  (let [bonds {"big" 700 "small1" 100 "small2" 100 "small3" 100}
+  (let [bonds {"big" (bond 700 :ordering) "small1" (bond 100 :ordering)
+               "small2" (bond 100 :ordering) "small3" (bond 100 :ordering)}
         witnesses (keys bonds)
         votes [(consensus/make-vote "big" "blockA" 10)
                (consensus/make-vote "small1" "blockA" 10)]]
     (is (some? (stake/stake-qc votes bonds witnesses)))))
 
 (deftest stake-qc-nil-below-stake-quorum
-  (let [bonds {"big" 700 "small1" 100 "small2" 100 "small3" 100}
+  (let [bonds {"big" (bond 700 :ordering) "small1" (bond 100 :ordering)
+               "small2" (bond 100 :ordering) "small3" (bond 100 :ordering)}
         witnesses (keys bonds)
         votes [(consensus/make-vote "small1" "blockB" 10)
                (consensus/make-vote "small2" "blockB" 10)
@@ -61,11 +91,22 @@
         "3-of-4 witnesses by COUNT, but only 300-of-1000 by stake -- must not form")))
 
 (deftest stake-qc-rejects-mismatched-votes
-  (let [bonds {"w1" 500 "w2" 500} witnesses (keys bonds)]
+  (let [bonds {"w1" (bond 500 :ordering) "w2" (bond 500 :ordering)} witnesses (keys bonds)]
     (is (thrown? #?(:clj Exception :cljs js/Error)
                  (stake/stake-qc [(consensus/make-vote "w1" "A" 1)
                                   (consensus/make-vote "w2" "B" 1)]
                                  bonds witnesses)))))
+
+(deftest stake-qc-only-among-role-filtered-witnesses
+  ;; a recompute-only witness's stake must not count toward an ORDERING
+  ;; quorum -- the caller is expected to pass (eligible-witnesses bonds
+  ;; min-bond :ordering) as `witnesses`, not the whole bond map's keys.
+  (let [bonds {"orderer" (bond 700 :ordering) "recompute-only" (bond 700 :recompute)}
+        ordering-witnesses (stake/eligible-witnesses bonds 500 :ordering)
+        votes [(consensus/make-vote "orderer" "blockA" 10)]]
+    (is (= #{"orderer"} ordering-witnesses))
+    (is (some? (stake/stake-qc votes bonds ordering-witnesses))
+        "700 is > 2/3 of the ordering-only total (700), since recompute-only's stake is excluded")))
 
 ;; ── equivocation detection / verification ────────────────────────────────────
 
@@ -110,23 +151,33 @@
 
 ;; ── slashing ─────────────────────────────────────────────────────────────────
 
-(deftest slash-removes-entire-bond-and-splits-burn-reward
-  (let [bonds {"cheater" 1000 "submitter" 0}
+(deftest slash-removes-entire-bond-record-and-splits-burn-reward
+  (let [bonds {"cheater" (bond 1000 :ordering) "submitter" (bond 0 :ordering)}
         {:keys [bonds burned rewarded]}
         (stake/slash bonds "cheater" {:credit-to "submitter"})]
-    (is (nil? (get bonds "cheater")) "offending witness's bond is entirely gone")
+    (is (nil? (get bonds "cheater")) "offending witness's ENTIRE bond record (amount + roles) is gone")
     (is (= 950.0 burned))
     (is (= 50.0 rewarded))
-    (is (= 50.0 (get bonds "submitter")))))
+    (is (= 50.0 (stake/bond-amount bonds "submitter")))
+    (is (= #{:ordering} (stake/bond-roles bonds "submitter"))
+        "crediting a reward preserves the submitter's existing roles")))
+
+(deftest slash-credit-to-a-not-yet-bonded-did-creates-a-roleless-record
+  (let [{:keys [bonds rewarded]} (stake/slash {"cheater" (bond 1000 :ordering)} "cheater"
+                                               {:credit-to "brand-new-submitter"})]
+    (is (= 50.0 rewarded))
+    (is (= 50.0 (stake/bond-amount bonds "brand-new-submitter")))
+    (is (= #{} (stake/bond-roles bonds "brand-new-submitter"))
+        "crediting a reward does not implicitly grant witness roles")))
 
 (deftest slash-without-credit-to-does-not-credit-anyone
-  (let [{:keys [bonds rewarded]} (stake/slash {"cheater" 1000} "cheater" {})]
+  (let [{:keys [bonds rewarded]} (stake/slash {"cheater" (bond 1000 :ordering)} "cheater" {})]
     (is (nil? (get bonds "cheater")))
     (is (= 0 rewarded))))
 
 (deftest slash-rejects-fractions-not-summing-to-one
   (is (thrown? #?(:clj Exception :cljs js/Error)
-               (stake/slash {"cheater" 1000} "cheater"
+               (stake/slash {"cheater" (bond 1000 :ordering)} "cheater"
                              {:burn-fraction 0.5 :whistleblower-fraction 0.4}))))
 
 ;; ── liveness (non-slashable) ─────────────────────────────────────────────────
@@ -139,9 +190,9 @@
 
 (deftest liveness-drop-does-not-touch-bonds
   ;; the whole point: liveness is never a slashing input in this design.
-  (let [bonds {"w2" 1000}]
+  (let [bonds {"w2" (bond 1000 :ordering)}]
     (stake/liveness-drop {"w2" 0} 100 ["w2"] 50)
-    (is (= 1000 (get bonds "w2")) "liveness-drop has no bonds parameter at all -- it cannot touch stake")))
+    (is (= 1000 (stake/bond-amount bonds "w2")) "liveness-drop has no bonds parameter at all -- it cannot touch stake")))
 
 ;; ── unbonding delay ──────────────────────────────────────────────────────────
 
