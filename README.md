@@ -207,11 +207,20 @@ forfeiture — silence can't be told apart from honest network failure).
 `request-unbond`/`unbond-available?` add a withdrawal delay so a witness
 can't misbehave and immediately walk away with their bond.
 
+Bond records carry a **`:roles` set** (ADR-2607995000 §5 — the unified
+witness market): `:ordering` (engi/L1 block consensus, this repo) and/or
+`:recompute` (proof-of-compute sample recompute, cloud-murakumo's domain).
+One shared bond market — bond, unbond delay, slashing, governance — with
+role-filtering only in `eligible-witnesses`'s 3-arity, instead of two
+separate staking markets for two physically-different node populations
+(Mac-mini-class ordering witnesses vs. GPU-class recompute witnesses).
+
 **Honest limit of this pass**: no real Base L2 escrow contract is deployed
-— `engi.stake` consumes an already-verified `{witness-did ->
-bonded-amount}` map, agnostic to its source, so a real custody integration
-is a swap-in later, not a redesign. Recruiting actual independent
-witnesses is a business-development activity, not something this repo (or
+— `engi.stake` consumes an already-verified `{witness-did -> {:amount N
+:roles #{...}}}` map, agnostic to its source, so a real custody
+integration is a swap-in later, not a redesign. Recruiting actual
+independent witnesses is a business-development activity, not something
+this repo (or
 an agent) can execute — see `docs/witness-recruitment.md` for the
 participation terms that would be shared with a real prospective operator.
 
