@@ -11,9 +11,10 @@
 ;; plain `npm run test:cljs` can NEVER accidentally reach the live-network
 ;; test:
 ;;   :test       engi.core-test / engi.crypto-test / engi.protocol-test /
-;;               engi.consensus-test (fake in-memory client -- no network,
-;;               safe for CI; consensus-test is pure like core-test, no
-;;               crypto/network of its own)
+;;               engi.consensus-test / engi.stake-test (fake in-memory
+;;               client -- no network, safe for CI; consensus-test and
+;;               stake-test are pure like core-test, no crypto/network of
+;;               their own)
 ;;   :live-test  engi.live-test only (real kotobase.net, throwaway did:key
 ;;               agents -- deliberately NOT run by CI, see README)
 (require '[clojure.string :as str]
@@ -30,7 +31,7 @@
            " :builds\n"
            " {:test {:target :node-test\n"
            "         :output-to \"out/test.js\"\n"
-           "         :ns-regexp \"^engi\\\\.(core|crypto|protocol|consensus)-test$\"}\n"
+           "         :ns-regexp \"^engi\\\\.(core|crypto|protocol|consensus|stake)-test$\"}\n"
            "  :live-test {:target :node-test\n"
            "              :output-to \"out/live-test.js\"\n"
            "              :ns-regexp \"^engi\\\\.live-test$\"}}}\n"))

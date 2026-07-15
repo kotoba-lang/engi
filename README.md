@@ -184,6 +184,37 @@ of an unordered per-agent pull.
 constructed directly as data in tests) — real multi-node network
 consensus over `murakumo/overlay` is explicit follow-up, not done here.
 
+## Permissionless witness admission — staking + equivocation slashing (ADR-2607994000)
+
+`src/engi/stake.cljc` replaces "the operator decides who the witnesses
+are" with a permissionless rule: anyone whose EXTERNAL collateral bond
+(e.g. USDC on Base L2 — reusing ADR-2607101100 §4's existing off-ramp
+boundary; deliberately NOT EN itself, since EN nets to zero and has no
+external price to lose) meets `min-bond` is eligible, no existing-witness
+vote required. Quorum becomes STAKE-weighted (`stake-quorum-met?`/
+`stake-qc`, a drop-in for `engi.consensus/qc`'s `:engi.qc/*` shape) rather
+than witness-count-based — splitting a fixed amount of stake into more
+identities does not increase the voting power a coalition controls, which
+is what actually resists Sybil admission once anyone can bond.
+
+Slashing is scoped to **equivocation only** (`detect-equivocation` /
+`verify-equivocation-evidence` / `slash`): two signed votes, same witness
+key, same height, different block-hash — the one fault category that's
+cryptographically unambiguous, which is what lets this design skip
+building a slashing-dispute/appeal system entirely. Liveness/censorship
+faults are handled by `liveness-drop` (active-set removal only, no bond
+forfeiture — silence can't be told apart from honest network failure).
+`request-unbond`/`unbond-available?` add a withdrawal delay so a witness
+can't misbehave and immediately walk away with their bond.
+
+**Honest limit of this pass**: no real Base L2 escrow contract is deployed
+— `engi.stake` consumes an already-verified `{witness-did ->
+bonded-amount}` map, agnostic to its source, so a real custody integration
+is a swap-in later, not a redesign. Recruiting actual independent
+witnesses is a business-development activity, not something this repo (or
+an agent) can execute — see `docs/witness-recruitment.md` for the
+participation terms that would be shared with a real prospective operator.
+
 ## Layout
 
 ```
@@ -192,6 +223,10 @@ src/engi/core.cljc       pure ledger logic — NO I/O, NO crypto, NO wall clock.
 src/engi/consensus.cljc   L1 — chained HotStuff BFT (block/vote/QC shape,
                           quorum arithmetic, 3-chain commit rule, leader
                           rotation). Pure, same platform-portability as core.
+src/engi/stake.cljc       permissionless witness admission — bonding,
+                          stake-weighted quorum, equivocation detection +
+                          slashing, liveness active-set removal, unbond
+                          delay. Pure, same platform-portability as core.
 src/engi/crypto.cljs     Ed25519 sign/verify + CID (transfer-id/entry-hash).
                          cljs-only: @noble/curves/@noble/hashes, the SAME
                          crypto stack kotobase-client already uses for CACAO —
@@ -206,6 +241,11 @@ src/engi/protocol.cljs   propose!/validate!/counter-commit!/finalize!/audit-agen
 test/engi/core-test.cljc     pure logic (JVM + cljs).
 test/engi/consensus_test.cljc quorum arithmetic, QC formation, 3-chain
                               commit rule, Byzantine-equivocation safety
+                              (JVM + cljs).
+test/engi/stake_test.cljc    bond eligibility, stake-weighted quorum
+                              (incl. the Sybil-splitting-doesn't-help
+                              property), equivocation detect/verify,
+                              slashing math, liveness drop, unbond delay
                               (JVM + cljs).
 test/engi/crypto-test.cljs   sign/verify round-trip, tamper rejection.
 test/engi/fake-kotobase.cljs an in-memory kotobase.net double, injected via
