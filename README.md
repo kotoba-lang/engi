@@ -1,6 +1,7 @@
 # engi
 
-**ENGI/EN mutual-credit ledger over kotobase.net** — implements
+**ENGI/EN mutual-credit ledger over kotobase.net, now with an L1** —
+implements
 [ADR-2607101100](https://github.com/com-junkawasaki/root/blob/main/90-docs/adr/2607101100-engi-mutual-credit-kotobase-native-design.md)
 (`com-junkawasaki/root`): a kotobase-native reimplementation of the spirit of
 `kotoba-lang/kotoba`'s original Rust `ADR-engi-mutual-credit-on-chain.md`
@@ -158,11 +159,39 @@ not implemented until its trigger conditions are met").
    addition) while working perfectly against the fake client. Caught by the
    live integration test, not by the fake-client protocol tests.
 
+## L1 — chained HotStuff-style BFT consensus (ADR-2607993000)
+
+`src/engi/consensus.cljc` adds a Byzantine-fault-tolerant ordering layer on
+top of the per-agent-graph ledger above: `n=3f+1` witnesses, `2f+1`-vote
+Quorum Certificates, and a chained-HotStuff 3-chain commit rule (a block
+commits once it has two consecutive directly-justified descendants). It is
+pure — no crypto, no network, no wall clock, same seam as `fold-balance`'s
+injected `:hash-fn` — so a whole validator set can be simulated as plain
+data. It deliberately does **not** reimplement transport (that's
+`murakumo/overlay`'s existing QUIC, reused unchanged) or vote signing
+(that's `witness-quorum`'s existing signer/attestation, reused unchanged);
+see the ADR for why. `test/engi/consensus_test.cljc` includes the concrete
+safety demonstration: an equivocating Byzantine witness cannot cause two
+conflicting Quorum Certificates to both form, for both `n=4` and `n=7`.
+
+Once blocks are 3-chain-committed, the finalized order of transfer
+proposals becomes the authoritative source for balances — see the new
+`kotoba-lang/en` repo (EN, the native currency unit riding on this L1),
+which layers `engi.core/fold-balance` over the finalized block log instead
+of an unordered per-agent pull.
+
+**Scope of this pass**: single-process simulation only (validator votes
+constructed directly as data in tests) — real multi-node network
+consensus over `murakumo/overlay` is explicit follow-up, not done here.
+
 ## Layout
 
 ```
-src/engi/core.cljc      pure ledger logic — NO I/O, NO crypto, NO wall clock.
-                         Runs identically under `clojure -M:test` (JVM) and cljs.
+src/engi/core.cljc       pure ledger logic — NO I/O, NO crypto, NO wall clock.
+                          Runs identically under `clojure -M:test` (JVM) and cljs.
+src/engi/consensus.cljc   L1 — chained HotStuff BFT (block/vote/QC shape,
+                          quorum arithmetic, 3-chain commit rule, leader
+                          rotation). Pure, same platform-portability as core.
 src/engi/crypto.cljs     Ed25519 sign/verify + CID (transfer-id/entry-hash).
                          cljs-only: @noble/curves/@noble/hashes, the SAME
                          crypto stack kotobase-client already uses for CACAO —
@@ -175,6 +204,9 @@ src/engi/protocol.cljs   propose!/validate!/counter-commit!/finalize!/audit-agen
                          wires core+crypto+store; every fn takes an explicit
                          client so tests can inject a fake one.
 test/engi/core-test.cljc     pure logic (JVM + cljs).
+test/engi/consensus_test.cljc quorum arithmetic, QC formation, 3-chain
+                              commit rule, Byzantine-equivocation safety
+                              (JVM + cljs).
 test/engi/crypto-test.cljs   sign/verify round-trip, tamper rejection.
 test/engi/fake-kotobase.cljs an in-memory kotobase.net double, injected via
                               kotobase.client's OWN `:fetch-fn` seam (the
