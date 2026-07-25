@@ -38,7 +38,8 @@
             [engi.core :as core]
             [engi.crypto :as crypto]
             [engi.store :as store]
-            [engi.protocol :as protocol]))
+            [engi.protocol :as protocol]
+            [engi.metrics :as metrics]))
 
 ;; ── verbatim HTTP logging (wraps js/fetch, does not change behavior) ──────
 
@@ -112,4 +113,78 @@
                     (when (.-status e) (println "    HTTP status:" (.-status e)))
                     (when (.-body e) (println "    body:" (js/JSON.stringify (.-body e))))
                     (is false (str "live test threw: " (.-message e)))
+                    (done)))))))
+
+;; ── funnel instrumentation against PRODUCTION (adr-ledger seq 66) ─────────
+;;
+;; The point of `engi.metrics` is that the durable half of the funnel is
+;; recoverable from the ledger by anyone with read access, with no trust in
+;; whoever emitted the counters. That claim is only worth anything if it holds
+;; against the REAL server, so this drives one real transfer with an emitter
+;; attached and then checks the emitted counts against the counts recomputed
+;; from freshly re-fetched production graphs.
+
+(deftest live-en-funnel-emitted-matches-persisted
+  (async done
+    (let [seen (atom [])
+          on-event (fn [ev] (swap! seen conj ev))
+          alice (crypto/generate-identity)
+          bob (crypto/generate-identity)
+          alice-owner (owner-client alice)
+          bob-owner (owner-client bob)]
+      (println "\n=== live EN funnel test ===")
+      (println "alice:" (:did alice))
+      (println "bob:  " (:did bob))
+      (-> (js/Promise.all
+           #js [(store/write-genesis! alice-owner (core/genesis {:credit-limit -1000 :created-at 0}))
+                (store/write-genesis! bob-owner (core/genesis {:credit-limit -1000 :created-at 0}))])
+          (.then (fn [_]
+                   (protocol/propose-transfer! alice-owner (:secret-key alice) (:did bob) 7
+                                                {:memo "funnel probe" :on-event on-event})))
+          (.then (fn [proposal]
+                   (-> (protocol/validate-proposal! alice-owner proposal {:on-event on-event})
+                       (.then (fn [v]
+                                (is (:valid? v) "live validate must pass")
+                                proposal)))))
+          (.then (fn [proposal]
+                   (-> (protocol/counter-commit! bob-owner (:secret-key bob) proposal
+                                                  {:on-event on-event})
+                       (.then (fn [cc] [proposal cc])))))
+          (.then (fn [[proposal cc]]
+                   (protocol/finalize! alice-owner (:secret-key alice) proposal
+                                       (:counter-sig cc) {:on-event on-event})))
+          (.then (fn [fin]
+                   (is (:finalized? fin) "live finalize must succeed")
+                   ;; brand-new clients -- prove the counts survive a real round trip
+                   (js/Promise.all #js [(store/fetch-entities! (owner-client alice))
+                                        (store/fetch-entities! (owner-client bob))])))
+          (.then (fn [^js graphs]
+                   (let [[alice-entities bob-entities] (array-seq graphs)
+                         alice-f (metrics/funnel-from-entities
+                                  alice-entities {:counterparties-excluding #{(:did alice)}})
+                         bob-f (metrics/funnel-from-entities
+                                bob-entities {:counterparties-excluding #{(:did bob)}})
+                         emitted (frequencies (map :stage @seen))]
+                     (println "\n--- emitted (in-process) ---" (pr-str emitted))
+                     (println "--- persisted alice ---" (pr-str alice-f))
+                     (println "--- persisted bob   ---" (pr-str bob-f))
+                     (is (= [:proposal :validation :counter-commit :finalization]
+                            (mapv :event @seen))
+                         "the live path emits all four stages in protocol order")
+                     (is (= 1 (:finalizations alice-f))
+                         "alice's PRODUCTION graph carries exactly one finalized debit")
+                     (is (= 1 (:counter-commits bob-f))
+                         "bob's PRODUCTION graph carries exactly one counter-commit")
+                     (is (= (get emitted :finalizations) (:finalizations alice-f))
+                         "emitted and persisted must agree against the real server -- if
+                          they ever disagree, either the emitter lied or a write silently
+                          failed, and both are things this funnel exists to catch")
+                     (is (= (get emitted :counter-commits) (:counter-commits bob-f)))
+                     (is (= [(:did bob)] (:external-counterparties alice-f))
+                         "alice's only counterparty is bob, and bob is not alice")
+                     (println "\n=== live EN funnel test PASSED ===")
+                     (done))))
+          (.catch (fn [^js e]
+                    (println "\n!!! live funnel test FAILED:" (.-message e))
+                    (is false (str "live funnel test threw: " (.-message e)))
                     (done)))))))

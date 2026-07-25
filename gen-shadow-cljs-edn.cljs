@@ -11,6 +11,7 @@
 ;; plain `npm run test:cljs` can NEVER accidentally reach the live-network
 ;; test:
 ;;   :test       engi.core-test / engi.crypto-test / engi.protocol-test /
+;;               engi.metrics-test (pure .cljc, also runs on the JVM) /
 ;;               engi.consensus-test / engi.stake-test (fake in-memory
 ;;               client -- no network, safe for CI; consensus-test and
 ;;               stake-test are pure like core-test, no crypto/network of
@@ -39,7 +40,7 @@
                      " :builds\n"
                      " {:test {:target :node-test\n"
                      "         :output-to \"out/test.js\"\n"
-                     "         :ns-regexp \"^engi\\\\.(core|crypto|protocol|consensus|stake)-test$\"}\n"
+                     "         :ns-regexp \"^engi\\\\.(core|crypto|protocol|consensus|stake|metrics)-test$\"}\n"
                      "  :live-test {:target :node-test\n"
                      "              :output-to \"out/live-test.js\"\n"
                      "              :ns-regexp \"^engi\\\\.live-test$\"}}}\n"))

@@ -15,7 +15,30 @@
   plain map of dids -> atom of entities works, see the test fake)."
   (:require [engi.core :as core]
             [engi.crypto :as crypto]
+            [engi.metrics :as metrics]
             [engi.store :as store]))
+
+;; ── funnel emission (engi.metrics) ────────────────────────────────────────
+;;
+;; Every step below accepts an optional `:on-event` fn in its opts map. It is
+;; called with a single map {:event <lifecycle-keyword> ...context} at the
+;; moment the step's outcome is known. Absent `:on-event` NOTHING changes:
+;; no call, no cost, identical return values -- the funnel is opt-in
+;; instrumentation layered on top, never a behavioural dependency (see
+;; engi.metrics ns docstring for why steps 1-2 cannot be recovered from the
+;; ledger and therefore need this seam at all).
+;;
+;; `emit!` swallows emitter exceptions on purpose: telemetry must never be
+;; able to fail a transfer. A broken counter is a measurement problem; a
+;; transfer that fails because of a broken counter is a correctness problem.
+
+(defn- emit!
+  [on-event event ctx]
+  (when on-event
+    (try
+      (on-event (assoc ctx :event event :stage (metrics/stage-of event)))
+      (catch :default _ nil)))
+  nil)
 
 ;; ── 1. propose (spender side) — no writes ─────────────────────────────────
 
@@ -30,7 +53,7 @@
   ([spender-client spender-secret-key receiver-did amount]
    (propose-transfer! spender-client spender-secret-key receiver-did amount {}))
   ([spender-client spender-secret-key receiver-did amount
-    {:keys [memo nonce now-ms]}]
+    {:keys [memo nonce now-ms on-event]}]
    (-> (store/fetch-entities! spender-client)
        (.then
         (fn [entities]
@@ -41,6 +64,10 @@
                 body {:spender spender-did :receiver receiver-did :amount amount
                       :spender-prev spender-prev :nonce (or nonce (str (random-uuid))) :ts ts}
                 {:keys [transfer-id sig]} (crypto/sign-transfer body spender-secret-key)]
+            (emit! on-event :proposal {:transfer-id transfer-id
+                                       :spender-did spender-did
+                                       :receiver-did receiver-did
+                                       :amount amount})
             {:transfer-body body
              :transfer-id transfer-id
              :self-sig sig
@@ -79,7 +106,7 @@
 
   → Promise<{:valid? bool :reason (when invalid) ...diagnostics}>."
   ([spender-reader-client proposal] (validate-proposal! spender-reader-client proposal {}))
-  ([spender-reader-client proposal {:keys [known-validators] :or {known-validators []}}]
+  ([spender-reader-client proposal {:keys [known-validators on-event] :or {known-validators []}}]
    (-> (js/Promise.all
         (clj->js (cons (store/fetch-entities! spender-reader-client)
                        (map store/fetch-entities! known-validators))))
@@ -98,32 +125,44 @@
                 live-warrants (filter (fn [w] (or (contains? spender-entity-ids (:engi/evidence-tx-a w))
                                                    (contains? spender-entity-ids (:engi/evidence-tx-b w))))
                                        validator-warrants)
-                new-balance (- balance (:amount proposal))]
-            (cond
-              (seq violations)
-              {:valid? false :reason :spender-chain-invalid :violations violations}
+                new-balance (- balance (:amount proposal))
+                result
+                (cond
+                  (seq violations)
+                  {:valid? false :reason :spender-chain-invalid :violations violations}
 
-              (nil? credit-limit)
-              {:valid? false :reason :spender-no-genesis}
+                  (nil? credit-limit)
+                  {:valid? false :reason :spender-no-genesis}
 
-              (not= actual-prev claimed-prev)
-              {:valid? false :reason :stale-prev :expected actual-prev :got claimed-prev}
+                  (not= actual-prev claimed-prev)
+                  {:valid? false :reason :stale-prev :expected actual-prev :got claimed-prev}
 
-              (not sig-ok?)
-              {:valid? false :reason :bad-signature}
+                  (not sig-ok?)
+                  {:valid? false :reason :bad-signature}
 
-              (seq forks)
-              {:valid? false :reason :spender-forked :forks forks}
+                  (seq forks)
+                  {:valid? false :reason :spender-forked :forks forks}
 
-              (seq live-warrants)
-              {:valid? false :reason :spender-under-warrant :warrants live-warrants}
+                  (seq live-warrants)
+                  {:valid? false :reason :spender-under-warrant :warrants live-warrants}
 
-              (< new-balance credit-limit)
-              {:valid? false :reason :credit-limit-exceeded
-               :balance balance :new-balance new-balance :credit-limit credit-limit}
+                  (< new-balance credit-limit)
+                  {:valid? false :reason :credit-limit-exceeded
+                   :balance balance :new-balance new-balance :credit-limit credit-limit}
 
-              :else
-              {:valid? true :balance balance :new-balance new-balance :credit-limit credit-limit})))))))
+                  :else
+                  {:valid? true :balance balance :new-balance new-balance :credit-limit credit-limit})]
+            ;; :reason rides on the rejection event on purpose -- an aggregate
+            ;; rejection count says the loop is leaking, the reason
+            ;; DISTRIBUTION says which invariant is doing the leaking, and
+            ;; :stale-prev vs :credit-limit-exceeded vs :bad-signature imply
+            ;; completely different fixes.
+            (emit! on-event (if (:valid? result) :validation :rejection)
+                   {:transfer-id (:transfer-id proposal)
+                    :spender-did (:spender-did proposal)
+                    :receiver-did (:receiver-did proposal)
+                    :reason (:reason result)})
+            result))))))
 
 ;; ── 3. counter-commit (receiver side) — one write, to the receiver's OWN graph
 
@@ -134,25 +173,36 @@
   `receiver-client` is the receiver's OWN owner-client.
 
   → Promise<{:counter-sig :credit-entry}>."
-  [receiver-client receiver-secret-key proposal]
-  (-> (store/fetch-entities! receiver-client)
-      (.then
-       (fn [entities]
-         (let [{:keys [seq last-entry]} (core/current-head entities)
-               prev-hash (if last-entry (crypto/entry-hash last-entry) "genesis")
-               counter-sig (crypto/sign-transfer-id (:transfer-id proposal) receiver-secret-key)
-               entry (core/next-entry
-                      {:seq seq} prev-hash
-                      {:kind "credit"
-                       :counterparty (:spender-did proposal)
-                       :amount (:amount proposal)
-                       :memo (:memo proposal)
-                       :transfer-id (:transfer-id proposal)
-                       :ts (:ts proposal)
-                       :self-sig counter-sig
-                       :counter-sig (:self-sig proposal)})]
-           (-> (store/write-entry! receiver-client entry)
-               (.then (fn [_] {:counter-sig counter-sig :credit-entry entry}))))))))
+  ([receiver-client receiver-secret-key proposal]
+   (counter-commit! receiver-client receiver-secret-key proposal {}))
+  ([receiver-client receiver-secret-key proposal {:keys [on-event]}]
+   (-> (store/fetch-entities! receiver-client)
+       (.then
+        (fn [entities]
+          (let [{:keys [seq last-entry]} (core/current-head entities)
+                prev-hash (if last-entry (crypto/entry-hash last-entry) "genesis")
+                counter-sig (crypto/sign-transfer-id (:transfer-id proposal) receiver-secret-key)
+                entry (core/next-entry
+                       {:seq seq} prev-hash
+                       {:kind "credit"
+                        :counterparty (:spender-did proposal)
+                        :amount (:amount proposal)
+                        :memo (:memo proposal)
+                        :transfer-id (:transfer-id proposal)
+                        :ts (:ts proposal)
+                        :self-sig counter-sig
+                        :counter-sig (:self-sig proposal)})]
+            ;; emitted only AFTER the write resolves -- a counter-commit that
+            ;; failed to persist is not a counter-commit, and counting it
+            ;; would make the emitted funnel disagree with the ledger that
+            ;; funnel-from-entities recomputes.
+            (-> (store/write-entry! receiver-client entry)
+                (.then (fn [_]
+                         (emit! on-event :counter-commit
+                                {:transfer-id (:transfer-id proposal)
+                                 :spender-did (:spender-did proposal)
+                                 :amount (:amount proposal)})
+                         {:counter-sig counter-sig :credit-entry entry})))))))))
 
 ;; ── 4. finalize (spender side) — one write, to the spender's OWN graph ────
 
@@ -167,27 +217,45 @@
   already computed at propose time rather than re-signing.
 
   → Promise<{:finalized? bool :debit-entry (when finalized) :reason (when not)}>."
-  [spender-client _spender-secret-key proposal counter-sig]
-  (-> (store/fetch-entities! spender-client)
-      (.then
-       (fn [entities]
-         (let [{:keys [seq last-entry]} (core/current-head entities)
-               actual-prev (if last-entry (crypto/entry-hash last-entry) "genesis")]
-           (if (not= actual-prev (:spender-prev proposal))
-             (js/Promise.resolve {:finalized? false :reason :stale-prev-at-finalize
-                                   :expected actual-prev :got (:spender-prev proposal)})
-             (let [entry (core/next-entry
-                          {:seq seq} actual-prev
-                          {:kind "debit"
-                           :counterparty (:receiver-did proposal)
-                           :amount (:amount proposal)
-                           :memo (:memo proposal)
-                           :transfer-id (:transfer-id proposal)
-                           :ts (:ts proposal)
-                           :self-sig (:self-sig proposal)
-                           :counter-sig counter-sig})]
-               (-> (store/write-entry! spender-client entry)
-                   (.then (fn [_] {:finalized? true :debit-entry entry}))))))))))
+  ([spender-client spender-secret-key proposal counter-sig]
+   (finalize! spender-client spender-secret-key proposal counter-sig {}))
+  ([spender-client _spender-secret-key proposal counter-sig {:keys [on-event]}]
+   (-> (store/fetch-entities! spender-client)
+       (.then
+        (fn [entities]
+          (let [{:keys [seq last-entry]} (core/current-head entities)
+                actual-prev (if last-entry (crypto/entry-hash last-entry) "genesis")]
+            (if (not= actual-prev (:spender-prev proposal))
+              (do
+                ;; a refused finalize is a REJECTION of the transfer, not a
+                ;; silent no-op: it is the concurrency failure mode this
+                ;; protocol is most likely to leak on at any real volume, and
+                ;; it is invisible unless counted here.
+                (emit! on-event :rejection
+                       {:transfer-id (:transfer-id proposal)
+                        :spender-did (:spender-did proposal)
+                        :receiver-did (:receiver-did proposal)
+                        :reason :stale-prev-at-finalize})
+                (js/Promise.resolve {:finalized? false :reason :stale-prev-at-finalize
+                                     :expected actual-prev :got (:spender-prev proposal)}))
+              (let [entry (core/next-entry
+                           {:seq seq} actual-prev
+                           {:kind "debit"
+                            :counterparty (:receiver-did proposal)
+                            :amount (:amount proposal)
+                            :memo (:memo proposal)
+                            :transfer-id (:transfer-id proposal)
+                            :ts (:ts proposal)
+                            :self-sig (:self-sig proposal)
+                            :counter-sig counter-sig})]
+                (-> (store/write-entry! spender-client entry)
+                    (.then (fn [_]
+                             (emit! on-event :finalization
+                                    {:transfer-id (:transfer-id proposal)
+                                     :spender-did (:spender-did proposal)
+                                     :receiver-did (:receiver-did proposal)
+                                     :amount (:amount proposal)})
+                             {:finalized? true :debit-entry entry})))))))))))
 
 ;; ── bilateral confirmation (async orchestration over engi.core's pure check)
 
