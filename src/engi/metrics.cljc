@@ -190,26 +190,62 @@
   ns exists to prevent. Merge with an emitted counter map only via
   `counts->response`'s `observed` argument, so the provenance stays visible.
 
-  `:counterparties-excluding` lets a caller exclude its own operator DID, which
-  is how you answer the question that actually matters for this loop -- has any
-  transfer ever happened between two agents where neither is the operator --
-  rather than the easier question of whether any entry exists at all."
+  ── `:affiliated-dids` and why it has no default (corrected 2026-07-25) ──
+
+  The question this loop actually turns on is not `has any transfer happened`
+  but `has one happened between two agents the operator does not control`. The
+  first version of this fn answered that by excluding a single operator DID,
+  and that was WRONG in a way worth spelling out, because it is the failure
+  mode this whole funnel exists to prevent.
+
+  This repo's own live test mints two fresh throwaway `did:key`s and drives a
+  real transfer between them against production kotobase.net. Neither is the
+  operator DID, so both would be reported as `:external-counterparties` --
+  making the trigger look like it fired when nothing independent happened. A
+  measurement that can be tripped by its own test suite is worse than no
+  measurement, because it is trusted.
+
+  Independence is NOT cryptographically provable: a `did:key` is just a
+  keypair, and the operator can mint as many as it likes. So this fn does not
+  try to infer it. `:affiliated-dids` must be supplied EXPLICITLY -- every DID
+  whose key the operator controls, including ephemeral test agents. With no
+  such set, `:external-counterparties` is `:affiliation-unknown`, never a
+  confident-looking list. The metric is exactly as good as the set it is given,
+  and it now says so instead of pretending otherwise."
   ([entities] (funnel-from-entities entities {}))
-  ([entities {:keys [counterparties-excluding] :or {counterparties-excluding #{}}}]
+  ([entities {:keys [affiliated-dids]}]
    (let [entries (filter #(contains? #{"debit" "credit"} (:engi/kind %)) entities)
          ids-of (fn [kind] (into #{} (comp (filter #(= kind (:engi/kind %)))
                                            (keep :engi/transfer-id))
                                  entries))
          debits (ids-of "debit")
          credits (ids-of "credit")
-         excluded (set counterparties-excluding)
          counterparties (into #{} (keep :engi/counterparty) entries)]
      {:counter-commits (count credits)
       :finalizations (count debits)
       :distinct-transfer-ids (count (into debits credits))
       :counterparties (vec (sort counterparties))
-      :external-counterparties (vec (sort (remove excluded counterparties)))
+      :external-counterparties (if (nil? affiliated-dids)
+                                 :affiliation-unknown
+                                 (vec (sort (remove (set affiliated-dids) counterparties))))
+      :affiliated-dids (if (nil? affiliated-dids)
+                         :not-supplied
+                         (vec (sort affiliated-dids)))
       :provenance :persisted-ledger})))
+
+(defn trigger-fired?
+  "Has the `:ordering` bond-floor trigger fired -- i.e. has this graph ever
+  transacted with a counterparty the operator does not control?
+
+  Returns `true`, `false`, or `:affiliation-unknown`. The third value is the
+  point: a caller that has not declared which DIDs it controls cannot get a
+  `false` here and mistake it for evidence of nothing, nor a `true` and act on
+  it. `engi.stake`'s bootstrap-ordering-min-bond docstring names this trigger;
+  raising a real bond floor off an `:affiliation-unknown` would be raising it
+  off a guess."
+  [funnel]
+  (let [ext (:external-counterparties funnel)]
+    (if (keyword? ext) ext (boolean (seq ext)))))
 
 (defn merge-funnel
   "Combine a persisted funnel (`funnel-from-entities`) with an emitted counter

@@ -161,9 +161,9 @@
           (.then (fn [^js graphs]
                    (let [[alice-entities bob-entities] (array-seq graphs)
                          alice-f (metrics/funnel-from-entities
-                                  alice-entities {:counterparties-excluding #{(:did alice)}})
+                                  alice-entities {:affiliated-dids #{(:did alice) (:did bob)}})
                          bob-f (metrics/funnel-from-entities
-                                bob-entities {:counterparties-excluding #{(:did bob)}})
+                                bob-entities {:affiliated-dids #{(:did alice) (:did bob)}})
                          emitted (frequencies (map :stage @seen))]
                      (println "\n--- emitted (in-process) ---" (pr-str emitted))
                      (println "--- persisted alice ---" (pr-str alice-f))
@@ -180,8 +180,20 @@
                           they ever disagree, either the emitter lied or a write silently
                           failed, and both are things this funnel exists to catch")
                      (is (= (get emitted :counter-commits) (:counter-commits bob-f)))
-                     (is (= [(:did bob)] (:external-counterparties alice-f))
-                         "alice's only counterparty is bob, and bob is not alice")
+                     ;; THE POINT OF THIS ASSERTION (corrected 2026-07-25):
+                     ;; alice and bob are both throwaway agents THIS TEST minted,
+                     ;; so neither is independent of the operator -- and the
+                     ;; first version of the metric, which excluded only the
+                     ;; operator DID, would have reported bob as an external
+                     ;; counterparty and tripped engi.stake's :ordering
+                     ;; bond-floor trigger on this test run. Declaring both as
+                     ;; affiliated is what makes the measurement honest, and an
+                     ;; EMPTY external set is the correct answer here.
+                     (is (empty? (:external-counterparties alice-f))
+                         "a transfer between two keys this test itself holds is
+                          not evidence of an independent counterparty")
+                     (is (false? (metrics/trigger-fired? alice-f))
+                         "and the bond-floor trigger must NOT fire on it")
                      (println "\n=== live EN funnel test PASSED ===")
                      (done))))
           (.catch (fn [^js e]

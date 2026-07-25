@@ -97,14 +97,44 @@
                               [{:db/id "engi/genesis" :engi/kind "genesis"}
                                {:db/id "engi/warrant/x" :engi/kind "warrant"}]))))))
 
-(deftest funnel-from-entities-separates-external-counterparties-test
-  (testing "the question that actually matters for this loop is whether a transfer
-            ever happened where the operator was NOT a party -- not whether any entry
-            exists at all"
+(deftest external-counterparties-requires-an-explicit-affiliation-set-test
+  (testing "with no affiliation set the answer is :affiliation-unknown, NOT a
+            confident-looking list -- independence is not cryptographically
+            provable and this fn must not pretend to infer it"
+    (let [f (m/funnel-from-entities sample-graph)]
+      (is (= :affiliation-unknown (:external-counterparties f)))
+      (is (= :not-supplied (:affiliated-dids f)))
+      (is (= :affiliation-unknown (m/trigger-fired? f))
+          "a caller who never declared what it controls cannot get a true or a
+           false it could act on")))
+  (testing "with one supplied, the remaining counterparties are reported"
     (let [f (m/funnel-from-entities sample-graph
-                                    {:counterparties-excluding #{"did:key:zOperator"}})]
+                                    {:affiliated-dids #{"did:key:zOperator"}})]
       (is (= ["did:key:zOperator" "did:key:zStranger"] (:counterparties f)))
-      (is (= ["did:key:zStranger"] (:external-counterparties f))))))
+      (is (= ["did:key:zStranger"] (:external-counterparties f)))
+      (is (true? (m/trigger-fired? f)))))
+  (testing "THE BUG THIS REPLACED: the operator's own throwaway test agents are
+            not the operator DID, so excluding only the operator DID would report
+            them as independent and trip the bond-floor trigger on the repo's own
+            live test. Listing them as affiliated is the caller's job, and the fn
+            now forces the caller to have that job."
+    (let [test-agent-graph [{:db/id "engi/tx/t" :engi/kind "debit"
+                             :engi/transfer-id "bafy-t"
+                             :engi/counterparty "did:key:zThrowawayBob" :engi/amount 15}]]
+      (is (= ["did:key:zThrowawayBob"]
+             (:external-counterparties
+              (m/funnel-from-entities test-agent-graph
+                                      {:affiliated-dids #{"did:key:zOperator"}})))
+          "operator-DID-only exclusion still reports the test agent as independent")
+      (is (empty? (:external-counterparties
+                   (m/funnel-from-entities
+                    test-agent-graph
+                    {:affiliated-dids #{"did:key:zOperator" "did:key:zThrowawayBob"}})))
+          "declaring the ephemeral key as affiliated is what actually fixes it")
+      (is (false? (m/trigger-fired?
+                   (m/funnel-from-entities
+                    test-agent-graph
+                    {:affiliated-dids #{"did:key:zOperator" "did:key:zThrowawayBob"}})))))))
 
 (deftest merge-funnel-lets-ledger-facts-outrank-emitter-claims-test
   (testing "for a stage that is both emitted and persisted, the ledger wins"
