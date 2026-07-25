@@ -288,6 +288,53 @@ this repo (or
 an agent) can execute — see `docs/witness-recruitment.md` for the
 participation terms that would be shared with a real prospective operator.
 
+### Bond floors are asymmetric by role (revised 2026-07-25)
+
+One bond market and one rulebook (ADR-2607995000 §5) — but the *floor* is
+sized to what each role actually guards, because they do not guard the same
+thing.
+
+`:recompute` guards inferences a buyer paid real USDC for. The value at risk
+is already denominated in the bond asset and exists from the first paid
+request, so a fixed floor is straightforwardly correct.
+`default-bond-policy` leaves it **nil** rather than inventing a number — the
+floor belongs to whoever custodies the payments, and nil means *not
+admissible* (fail-closed), never 0.
+
+`:ordering` guards the order of EN transfers, and EN is non-priced,
+non-redeemable and convertible to nothing (ADR-2607995000 §1). The protocol
+therefore **cannot compute** what a successful equivocation is worth without
+putting an external price on EN — which is exactly the back door §3 of that
+ADR closed when it repealed per-transfer external-asset fees. This is *not* a
+claim that equivocation is harmless: a counterparty who hands over real goods
+for double-spent EN loses something real. It is that the loss is the
+counterparty's own private valuation, unavailable to the protocol.
+
+So `:ordering`'s floor is a **governance parameter, not a formula** —
+`bootstrap-ordering-min-bond` is **0**, with an objective trigger for raising
+it: the first EN transfer between two agents where neither is the operator.
+That is now measurable (`engi.metrics` → `:external-counterparties`), so the
+question has a checkable answer instead of a judgement call. The previous
+`min-bond: 500` was quoted while no escrow contract existed to accept it, and
+the count of external witnesses who ever bonded is 0.
+
+The cost is stated, not buried: **an unbonded witness set has no Sybil
+resistance.** `quorum-met?` returns a map rather than a boolean for exactly
+this reason —
+
+```clojure
+(stake/quorum-met? voted bonds witnesses)
+;; bonded:   {:met? true :basis :stake-weighted   :sybil-resistant? true  ...}
+;; unbonded: {:met? true :basis :counted-unbonded :sybil-resistant? false :why "..."}
+```
+
+— so a caller cannot get the security property wrong by only checking
+`:met?`. The unbonded branch is a **liveness arrangement among an enumerated
+roster, not Byzantine security**, appropriate only while there is nothing to
+steal. `stake-quorum-met?` itself is unchanged, and so is
+`(eligible-witnesses bonds min-bond role)` for callers who genuinely want a
+single uniform floor.
+
 ## Layout
 
 ```
