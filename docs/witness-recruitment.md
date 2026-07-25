@@ -22,13 +22,15 @@ workload riding on this consensus today.
 
 1. Hold a `did:key` identity (self-generated, no registration with the
    operator required).
-2. Bond external collateral — currently specified as USDC on Base L2
-   (reusing the existing kotobase-ecosystem off-ramp boundary,
+2. **For the `:ordering` role, post nothing.** The bond floor for ordering
+   is **0** (`engi.stake/bootstrap-ordering-min-bond`) — see "Bond
+   requirement" below for why, and for what would change it. For the
+   `:recompute` role, bond external collateral (USDC on Base L2, reusing
+   the existing kotobase-ecosystem off-ramp boundary,
    [ADR-2607101100](https://github.com/com-junkawasaki/root/blob/main/90-docs/adr/2607101100-engi-mutual-credit-kotobase-native-design.md)
-   §4) — meeting or exceeding the current `min-bond` threshold.
-   **As of this draft, no real escrow contract exists yet** — bonding is
-   not actually possible today; this section describes the intended flow
-   once one is deployed and independently reviewed.
+   §4) meeting that role's floor. **No escrow contract is deployed, so
+   `:recompute` bonding is still not possible today**; `:ordering`
+   participation no longer waits on one.
 3. Once bonded and past the next epoch boundary, your `did:key` is
    automatically part of the witness set — no vote by existing witnesses,
    no application to `com-junkawasaki`, is required or possible under this
@@ -36,28 +38,93 @@ workload riding on this consensus today.
 4. Run the witness node software (vote-signing + the wire protocol over
    `murakumo/overlay`) and begin voting on proposed blocks.
 
-## Bond requirement (illustrative, governance-adjustable)
+## Bond requirement — asymmetric by role (revised 2026-07-25)
 
-- **`min-bond`: 500 (USDC-equivalent)** — a starting parameter, not a
-  fixed price. It exists to make an equivocation attack's potential upside
-  clearly smaller than the bond that would be forfeited; the actual figure
-  should be revisited once real transfer-volume data exists, via the same
-  stake-weighted quorum vote used for block finality (no separate
-  governance process).
-- This is collateral **at risk** — see "Risks" below. It is not a deposit
-  held for safekeeping; it is explicitly slashable.
+An earlier draft of this document quoted a single **`min-bond`: 500
+(USDC-equivalent)** across both roles. That figure has been withdrawn,
+because it could not be justified and it was the binding barrier to entry:
+it was quoted while no escrow contract existed to accept it, and the count
+of external witnesses who have ever bonded is **0**.
+
+The floor is now sized to what each role actually guards.
+
+### `:ordering` — floor **0**
+
+A bond exists to make an attack's upside smaller than the collateral it
+forfeits. Sizing one therefore requires knowing what a successful attack is
+worth. For ordering, the protocol cannot know that:
+
+- EN is **non-priced, non-redeemable, and convertible to nothing**
+  (ADR-2607995000 §1 membrane rules). There is no exchange rate to size a
+  bond against.
+- This is *not* a claim that equivocation is harmless. A counterparty who
+  hands over real goods for double-spent EN loses something real. But that
+  loss is **the counterparty's own private valuation of those goods** —
+  unpriced, and unavailable to the protocol.
+- Putting an external price on EN in order to compute a bond would reopen
+  exactly the back door ADR-2607995000 §3 closed when it repealed
+  per-transfer external-asset fees.
+
+So the ordering floor is a **governance parameter, not a formula** — set by
+the same stake-weighted 2/3 vote used for block finality (ADR-2607994000
+Decision #8), with a bootstrap value of 0 and an **objective trigger** for
+revisiting it rather than a number chosen to look prudent.
+
+**The trigger:** the first EN transfer between two agents where neither is
+the operator. As of 2026-07-25 that count is measurable rather than
+assumed — `engi.metrics/funnel-from-entities` reports
+`:external-counterparties` from the ledger itself, and
+`bin/engi_metrics.cljs` runs it against live kotobase.net. When that stops
+being empty, there is something for an equivocation to extract, and the
+floor gets revisited with real data instead of a guess.
+
+**The honest cost, stated rather than buried:** an unbonded witness set has
+**no Sybil resistance**. Anyone can mint arbitrarily many `did:key`s for
+free. `engi.stake/quorum-met?` therefore returns
+`{:basis :counted-unbonded :sybil-resistant? false}` in that regime — a
+**liveness arrangement among an enumerated roster, not Byzantine security**,
+and the code refuses to let a caller read it as the latter. Do not run this
+regime once there is value at stake; that is what the trigger is for.
+
+### `:recompute` — floor set by the payment custodian
+
+Here the value at risk *is* already denominated in the bond asset: a buyer
+paid real USDC for an inference, and the witness attests it was computed
+honestly. A fixed floor is straightforwardly correct, and it applies from
+the first paid request. `engi.stake/default-bond-policy` deliberately leaves
+this **nil** rather than inventing a number — the floor belongs to whoever
+custodies the compute payments (cloud-murakumo), and a nil floor means the
+role is **not admissible** until a policy supplies one (fail-closed).
+
+Collateral, where posted, is **at risk** — see "Risks" below. It is not a
+deposit held for safekeeping; it is explicitly slashable.
 
 ## Expected returns (no guarantee, no fixed rate)
 
 ENGI/EN cannot mint new EN as a witness reward — doing so would break its
-core net-zero invariant. Instead, the design (ADR-2607994000 Decision #7)
-proposes a small, external, per-finalized-transfer fee (same asset as the
-bond) distributed to active witnesses proportional to stake. **No fee rate
-is set yet** — there is no operating history to price it from, and any
-number offered here would be speculative. Do not treat participation as
-an investment with an expected yield; treat it as compensation, if any,
-for providing a specific technical service (block validation), sized to
-actual usage once there is usage to size it from.
+core net-zero invariant.
+
+The per-finalized-transfer external fee this document previously described
+(ADR-2607994000 Decision #7) was **repealed** by ADR-2607995000 §3: charging
+an external-asset fee per EN transfer puts an external price tag on EN's
+movement, which breaks the non-pricing invariant through the back door.
+
+What replaced it: witness duty is **labour**, and labour mints **credits**
+(murakumo memory×time) at a flat rate per finalized block — deliberately not
+proportional to EN volume, since proportionality is what would re-attach a
+price to EN. Be clear-eyed about what that means for an external
+participant: **credits are non-redeemable by design** (ADR-2607995000 §1
+forbids credits→fiat), so they are compensation usable inside this economy,
+not income convertible outside it. ADR-2607995000 says so in its own
+Consequences section rather than leaving you to discover it.
+
+If external-asset compensation is required, the path is a stake-weighted 2/3
+governance vote to pay for the service out of real on-ramp revenue — which
+means it is bounded by revenue that, as of this writing, is **0 active
+Stripe subscriptions and 0 settled x402 payments**. No rate is offered here
+because there is nothing yet to pay one from.
+
+Do not treat participation as an investment with an expected yield.
 
 ## Risks (read before considering real participation)
 
@@ -76,9 +143,16 @@ actual usage once there is usage to size it from.
 - **No regulatory or legal review has been performed** on any of this —
   anyone considering real participation, on either side, should treat that
   as entirely open and get their own advice before committing real funds.
-- **Parameters (bond amount, unbond delay, fee rate) can change** via
+- **Parameters (bond floors, unbond delay, compensation) can change** via
   governance vote among current witnesses — participation terms are not
-  fixed for the life of the system.
+  fixed for the life of the system. In particular, the `:ordering` floor of
+  0 is explicitly expected to rise once the trigger above fires.
+- **While the `:ordering` floor is 0, that role's quorum is a head count
+  with no Sybil resistance** (`:basis :counted-unbonded`). It is a liveness
+  arrangement among an enumerated roster, not Byzantine fault tolerance.
+  Anyone relying on this for safety today would be relying on something
+  that is not there, which is why the code returns
+  `:sybil-resistant? false` in-band rather than a bare boolean.
 
 ## Non-goals of this document
 

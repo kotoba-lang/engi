@@ -4,8 +4,8 @@
   identically under `clojure -M:test` (JVM) and cljs."
   (:require [engi.consensus :as consensus]
             [engi.stake :as stake]
-            #?(:clj [clojure.test :refer [deftest is]]
-               :cljs [cljs.test :refer-macros [deftest is]])))
+            #?(:clj [clojure.test :refer [deftest is testing]]
+               :cljs [cljs.test :refer-macros [deftest is testing]])))
 
 (defn- bond
   "Test helper: build a bond record `{:amount amount :roles (set roles)}`."
@@ -208,3 +208,98 @@
 
 (deftest unbond-available-false-with-no-request-on-file
   (is (nil? (stake/unbond-available? {} "w1" 100 3))))
+
+;; ── role-asymmetric bond floors (2026-07-25) ─────────────────────────────
+;;
+;; ADR-2607995000 §5's "one bond market, role tags" is preserved; what changes
+;; is that the FLOOR is sized to what each role actually guards. See the
+;; stake.cljc section comment for why :ordering's floor cannot be derived by
+;; formula without pricing EN.
+
+(deftest ordering-floor-is-zero-recompute-has-none-by-default-test
+  (testing "bootstrap :ordering floor is 0 -- an explicit, justified parameter"
+    (is (= 0 stake/bootstrap-ordering-min-bond))
+    (is (= 0 (stake/required-bond :ordering))))
+  (testing ":recompute's floor is nil, not an invented number -- it is owned by
+            whoever custodies the compute payments, and nil means NOT admissible"
+    (is (nil? (stake/required-bond :recompute)))
+    (is (= #{} (stake/eligible-for-role
+                {"did:key:zR" {:amount 10000 :roles #{:recompute}}}
+                :recompute)))
+    (testing "supplying a real policy admits it"
+      (is (= #{"did:key:zR"}
+             (stake/eligible-for-role
+              {"did:key:zR" {:amount 10000 :roles #{:recompute}}}
+              :recompute {:recompute 500})))
+      (is (= #{}
+             (stake/eligible-for-role
+              {"did:key:zR" {:amount 499 :roles #{:recompute}}}
+              :recompute {:recompute 500})))))
+  (testing "an unknown role is never admissible by accident"
+    (is (nil? (stake/required-bond :not-a-role)))
+    (is (= #{} (stake/eligible-for-role {"did:key:zX" {:amount 1e9 :roles #{:not-a-role}}}
+                                        :not-a-role)))))
+
+(deftest unbonded-ordering-witness-is-admissible-test
+  (testing "a witness with zero collateral can serve :ordering -- which is exactly
+            the barrier that kept external ordering witnesses at 0, since no escrow
+            contract has ever existed to accept a bond"
+    (let [bonds {"did:key:zA" {:amount 0 :roles #{:ordering}}
+                 "did:key:zB" {:amount 0 :roles #{:ordering}}
+                 "did:key:zC" {:amount 0 :roles #{:recompute}}}]
+      (is (= #{"did:key:zA" "did:key:zB"} (stake/eligible-for-role bonds :ordering)))
+      (testing "role tags still gate: an unbonded recompute-only witness stays out
+                of the ordering set"
+        (is (not (contains? (stake/eligible-for-role bonds :ordering) "did:key:zC")))))))
+
+(deftest existing-uniform-floor-api-is-unchanged-test
+  (testing "callers who genuinely want ONE floor across every role keep getting it --
+            this change adds a path, it does not remove one"
+    (let [bonds {"did:key:zA" {:amount 500 :roles #{:ordering}}
+                 "did:key:zB" {:amount 100 :roles #{:ordering}}}]
+      (is (= #{"did:key:zA"} (stake/eligible-witnesses bonds 500)))
+      (is (= #{"did:key:zA"} (stake/eligible-witnesses bonds 500 :ordering)))
+      (is (= #{} (stake/eligible-witnesses bonds 500 :recompute))))))
+
+(deftest quorum-carries-its-security-basis-test
+  (testing "with real stake, quorum-met? is stake-weighted and says so"
+    (let [bonds {"a" {:amount 600 :roles #{:ordering}}
+                 "b" {:amount 300 :roles #{:ordering}}
+                 "c" {:amount 100 :roles #{:ordering}}}
+          ws ["a" "b" "c"]
+          r (stake/quorum-met? #{"a"} bonds ws)]
+      (is (false? (:met? r)) "600/1000 is not > 2/3")
+      (is (= :stake-weighted (:basis r)))
+      (is (true? (:sybil-resistant? r)))
+      (is (= 1000 (:total-stake r)))
+      (is (= (:met? r) (stake/stake-quorum-met? #{"a"} bonds ws))
+          "must agree with the pre-existing predicate exactly")
+      (let [r2 (stake/quorum-met? #{"a" "b"} bonds ws)]
+        (is (true? (:met? r2)) "900/1000 is > 2/3")
+        (is (= (:met? r2) (stake/stake-quorum-met? #{"a" "b"} bonds ws))))))
+
+  (testing "with no stake at all, quorum falls back to a head count AND refuses to
+            let a caller mistake that for Byzantine security"
+    (let [bonds {"a" {:amount 0 :roles #{:ordering}}
+                 "b" {:amount 0 :roles #{:ordering}}
+                 "c" {:amount 0 :roles #{:ordering}}}
+          ws ["a" "b" "c"]]
+      (is (false? (stake/stake-quorum-met? #{"a" "b" "c"} bonds ws))
+          "the stake-weighted rule alone would halt the chain here, which is the
+           reason the fallback exists")
+      (let [r (stake/quorum-met? #{"a" "b" "c"} bonds ws)]
+        (is (true? (:met? r)) "3/3 head count clears > 2/3")
+        (is (= :counted-unbonded (:basis r)))
+        (is (false? (:sybil-resistant? r)) "the honest label, returned in-band")
+        (is (string? (:why r))))
+      (is (false? (:met? (stake/quorum-met? #{"a" "b"} bonds ws)))
+          "2/3 is not STRICTLY greater than 2/3, same strictness as the stake rule")
+      (is (false? (:met? (stake/quorum-met? #{} bonds [])))
+          "an empty roster never reaches quorum")))
+
+  (testing "duplicate DIDs in the witness roster cannot inflate a head count"
+    (let [bonds {"a" {:amount 0 :roles #{:ordering}}
+                 "b" {:amount 0 :roles #{:ordering}}
+                 "c" {:amount 0 :roles #{:ordering}}}]
+      (is (false? (:met? (stake/quorum-met? #{"a"} bonds ["a" "a" "a" "b" "c"])))
+          "a repeated witness is still one witness"))))

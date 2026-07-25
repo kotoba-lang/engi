@@ -23,9 +23,15 @@
   ordering witnesses vs. GPU-class recompute witnesses) — bond, unbond
   delay, slashing, and governance are all shared; only which duty a
   witness is eligible for differs. Role-filtering happens entirely in
-  `eligible-witnesses`'s 3-arity — every other fn here (`stake-qc`,
-  `slash`, ...) is role-agnostic: it just operates on whatever witness
-  coll/bond-record the caller already filtered by role.
+  `eligible-witnesses`'s 3-arity and `eligible-for-role` — every other fn
+  here (`stake-qc`, `slash`, ...) is role-agnostic: it just operates on
+  whatever witness coll/bond-record the caller already filtered by role.
+
+  The bond FLOOR, however, is role-ASYMMETRIC as of 2026-07-25 (see the
+  `required-bond` / `eligible-for-role` / `quorum-met?` section below): one
+  market and one rulebook, but the amount of collateral a role must post is
+  sized to what that role actually guards, and for `:ordering` the protocol
+  cannot compute that without pricing EN — which it must not do.
 
   Admission (`eligible-witnesses`) is permissionless: meeting the bond
   threshold is the ONLY requirement, no existing-witness vote. Quorum
@@ -82,6 +88,87 @@
   ([bonds min-bond role]
    (into #{} (filter #(contains? (bond-roles bonds %) role)) (eligible-witnesses bonds min-bond))))
 
+;; ── role-asymmetric bond requirement (2026-07-25) ───────────────────────────
+;;
+;; ADR-2607995000 §5 unified the two witness markets into ONE bond market with
+;; role tags, and that stands. What did NOT hold up is applying the SAME bond
+;; FLOOR to both roles, because the two roles do not guard the same value:
+;;
+;;   :recompute — a buyer paid real USDC for an inference and a witness attests
+;;                it was computed honestly. The value at risk is denominated in
+;;                the bond asset already, and it exists from the first paid
+;;                request. A fixed floor is straightforwardly correct here.
+;;
+;;   :ordering  — a witness attests the order of EN transfers. EN is non-priced,
+;;                non-redeemable and convertible to nothing (ADR-2607995000 §1
+;;                membrane rules), so the protocol CANNOT compute what a
+;;                successful equivocation is worth without putting an external
+;;                price on EN — which is precisely the back door §3 of that same
+;;                ADR closed when it repealed per-transfer external-asset fees.
+;;
+;; Note carefully what this does and does not claim. It is NOT that equivocating
+;; on EN ordering is harmless: a counterparty who hands over real goods for
+;; double-spent EN loses something real. It is that the loss is the
+;; COUNTERPARTY'S OWN valuation of those goods, which is private, unpriced, and
+;; unavailable to the protocol. So the ordering floor cannot be derived by
+;; formula and is a GOVERNANCE PARAMETER (stake-weighted 2/3, ADR-2607994000
+;; Decision #8) — with a bootstrap value of 0 and an objective trigger for
+;; revisiting it, rather than a number invented to look prudent.
+;;
+;; The trigger is now measurable, which it was not before today: the first EN
+;; transfer between two agents where neither is the operator. `engi.metrics`
+;; reports exactly that (:external-counterparties), so "when do we set a real
+;; ordering bond?" has a checkable answer instead of a judgement call.
+;;
+;; The honest cost of a 0 floor is stated, not buried: an unbonded witness set
+;; has NO Sybil resistance. `quorum-met?` below therefore refuses to launder
+;; that into something that looks like BFT security — it returns a map that
+;; says so.
+
+(def bootstrap-ordering-min-bond
+  "Bond floor for `:ordering` during bootstrap: 0.
+
+  Not a claim that ordering is riskless. A claim that (a) the protocol cannot
+  price EN without breaking the non-pricing invariant, (b) with zero EN
+  transfers between non-operator agents there is currently nothing for an
+  equivocation to extract, and (c) a nonzero floor whose only justification is
+  that it sounds prudent buys no security and costs every prospective external
+  witness their entry — which is the observed state: `docs/witness-recruitment.md`
+  quoted 500 USDC-equivalent while no escrow contract existed to accept it, and
+  zero external witnesses have ever bonded."
+  0)
+
+(def default-bond-policy
+  "Per-role bond floors. `:ordering` starts at the bootstrap value above;
+  `:recompute` is deliberately left nil rather than given an invented number —
+  its floor is owned by whoever custodies the compute payments (cloud-murakumo),
+  and this ns will not fabricate one on their behalf. A nil floor for a role
+  means that role is NOT admissible here until a policy supplies it, which is
+  the fail-closed direction."
+  {:ordering bootstrap-ordering-min-bond
+   :recompute nil})
+
+(defn required-bond
+  "Minimum bond for `role` under `policy` (defaults to `default-bond-policy`).
+  Returns nil when the policy has no floor for that role — callers must treat
+  nil as 'not admissible', never as 0."
+  ([role] (required-bond role default-bond-policy))
+  ([role policy] (get policy role)))
+
+(defn eligible-for-role
+  "The witnesses admissible for `role`: they declared the role AND meet that
+  role's own floor. Empty when the policy supplies no floor for the role.
+
+  This is the role-asymmetric replacement for `(eligible-witnesses bonds
+  min-bond role)`. That 3-arity still exists and is unchanged — a caller who
+  genuinely wants one floor across every role keeps getting exactly that."
+  ([bonds role] (eligible-for-role bonds role default-bond-policy))
+  ([bonds role policy]
+   (if-let [floor (required-bond role policy)]
+     (into #{} (filter #(contains? (bond-roles bonds %) role))
+           (eligible-witnesses bonds floor))
+     #{})))
+
 ;; ── stake-weighted quorum ────────────────────────────────────────────────────
 
 (defn total-stake
@@ -108,6 +195,55 @@
         total (total-stake bonds witnesses)
         voted-stake (total-stake bonds (filter voted-set witnesses))]
     (and (pos? total) (> (* 3 voted-stake) (* 2 total)))))
+
+(defn quorum-met?
+  "Quorum WITH ITS SECURITY BASIS ATTACHED, for the role-asymmetric bond model
+  above. Returns a map, never a bare boolean, because the same `true` means two
+  very different things depending on whether any collateral is at stake:
+
+    {:met? bool :basis :stake-weighted   :sybil-resistant? true  ...}
+    {:met? bool :basis :counted-unbonded :sybil-resistant? false ...}
+
+  When total stake is positive this is exactly `stake-quorum-met?` — unchanged
+  semantics, unchanged safety argument. When total stake is ZERO (the bootstrap
+  `:ordering` set, where the floor is 0 and nobody has bonded) a stake-weighted
+  rule can never be met and the chain would simply halt, so this falls back to a
+  >2/3 HEAD COUNT over the enumerated witness set.
+
+  That fallback is not BFT and this fn will not let a caller pretend otherwise:
+  head counting has no Sybil resistance whatsoever, since anyone can mint
+  arbitrarily many did:keys for free. `:sybil-resistant? false` is the honest
+  label (ADR-2607110300's labelling principle: do not call it decentralized
+  until it is), and it is returned in-band precisely so a caller cannot get the
+  security property wrong by only checking `:met?`.
+
+  The fallback is therefore a LIVENESS arrangement among an enumerated roster,
+  not a security guarantee — appropriate exactly while there is nothing to
+  steal (zero EN transfers between non-operator agents, which `engi.metrics`
+  now measures), and to be retired by the same stake-weighted governance vote
+  that sets a real `:ordering` floor once that changes."
+  [voted bonds witnesses]
+  (let [voted-set (set voted)
+        roster (distinct witnesses)
+        total (total-stake bonds roster)
+        voted-stake (total-stake bonds (filter voted-set roster))
+        n (count roster)
+        n-voted (count (filter voted-set roster))]
+    (if (pos? total)
+      {:met? (> (* 3 voted-stake) (* 2 total))
+       :basis :stake-weighted
+       :sybil-resistant? true
+       :total-stake total
+       :voted-stake voted-stake}
+      {:met? (and (pos? n) (> (* 3 n-voted) (* 2 n)))
+       :basis :counted-unbonded
+       :sybil-resistant? false
+       :witness-count n
+       :voted-count n-voted
+       :why "no bonded collateral in this witness set, so quorum is a head count
+             over an enumerated roster -- a liveness arrangement, not Byzantine
+             security. Anyone can mint did:keys for free; do not read :met? true
+             here as a safety property."})))
 
 (defn stake-qc
   "Stake-weighted analogue of `engi.consensus/qc`: given `votes` (already

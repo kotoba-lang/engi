@@ -113,6 +113,70 @@ gives pull-based deterrence; push-based propagation is deferred to
 — the full `kotoba-dht` substrate revival, status "proposed, future path —
 not implemented until its trigger conditions are met").
 
+## Transfer-loop instrumentation (`engi.metrics`)
+
+The EN loop's problem was never that it was slow — it was that nobody could
+tell a slow loop from a dead one. A system-dynamics pass over
+[`kotoba-lang/dynamics`](https://github.com/kotoba-lang/dynamics)' archetype
+catalog (com-junkawasaki/root adr-ledger seq 66, 2026-07-25) scored every
+system in it on one formula and found `:engi-en-mutual-credit-current` at
+**instrumentation-completeness 0** — the lowest in a catalog where every
+incumbent money system sits at 0.90–0.98 (Visa 0.95, Ethereum 0.98,
+commercial-bank credit creation 0.95). `dynamics.core/loop-structural-strength`
+returns `nil` rather than a number for exactly that reason. Fixing it
+outranked every currency-design change in the same pass.
+
+`engi.metrics` gives the funnel its shape, in protocol order:
+
+| stage | emitted by | durable? |
+|---|---|---|
+| `:proposals` | `propose-transfer!` | no — step 1 writes nothing |
+| `:validations` | `validate-proposal!` ⇒ `:valid? true` | no — step 2 writes nothing |
+| `:rejections` | `validate-proposal!` ⇒ `:valid? false`, and a refused `finalize!` | no |
+| `:counter-commits` | `counter-commit!` (after the write resolves) | **yes** — a credit entry |
+| `:finalizations` | `finalize!` (after the write resolves) | **yes** — a debit entry |
+
+Two halves, deliberately kept distinguishable:
+
+- **Emitted.** Every protocol step takes an optional `:on-event` fn. Pass one
+  and you get the whole funnel; pass nothing and behaviour is byte-for-byte
+  unchanged (no call, no cost, same return values, old arities intact). An
+  emitter that throws cannot fail a transfer — a broken counter is a
+  measurement problem, a transfer that fails because of one is a correctness
+  problem.
+- **Persisted.** `funnel-from-entities` recomputes the bottom two stages from
+  a graph alone, counting *distinct transfer-ids* rather than rows so a
+  replayed read cannot double a count. This half needs no trust in the
+  emitter, and `merge-funnel` lets it **outrank** emitted counts for the same
+  stage: a ledger fact beats a process's claim about itself.
+
+A stage nobody counted is reported `:unobserved`, never `0`, and a rate whose
+denominator is 0 is `nil`, never `0.0`. "We counted and there were none" and
+"nobody was counting" are different facts, and collapsing them would recreate
+the instrumentation-0 problem in a new place.
+
+```bash
+# report the persisted half from a live kotobase.net graph
+ENGI_SECRET_KEY_B64=<base64 ed25519 seed> \
+  nbb --classpath "src:$(clojure -Spath | tr ':' '\n' | grep kotobase-client)" \
+      bin/engi_metrics.cljs --json
+```
+
+It reads exactly **one** graph — the one owned by that key. That is not a
+shortcut: kotobase.net's apex requires a CACAO on every call and only a
+graph's own key can mint a satisfying one, so a third party gets 401 reading
+someone else's graph (the same limitation this repo's own live test found on
+2026-07-09, see "Known limitations"). A network-wide funnel needs per-agent
+runs or a delegated-read CACAO that does not exist yet.
+
+Verified against **production** kotobase.net, not just the fake client:
+`npm run test:live`'s `live-en-funnel-emitted-matches-persisted` drives a real
+transfer between two fresh throwaway agents, re-fetches both graphs with brand
+new clients, and asserts the emitted counts equal the counts recomputed from
+the server's own data (observed 2026-07-25: emitted
+`{:proposals 1 :validations 1 :counter-commits 1 :finalizations 1}`, persisted
+spender `:finalizations 1`, persisted receiver `:counter-commits 1`).
+
 ## Deliberately NOT implemented (v1 scope, ADR §2 / Consequences)
 
 - **Push warrant gossip / neighborhood validators** — the original Rust
@@ -223,6 +287,53 @@ independent witnesses is a business-development activity, not something
 this repo (or
 an agent) can execute — see `docs/witness-recruitment.md` for the
 participation terms that would be shared with a real prospective operator.
+
+### Bond floors are asymmetric by role (revised 2026-07-25)
+
+One bond market and one rulebook (ADR-2607995000 §5) — but the *floor* is
+sized to what each role actually guards, because they do not guard the same
+thing.
+
+`:recompute` guards inferences a buyer paid real USDC for. The value at risk
+is already denominated in the bond asset and exists from the first paid
+request, so a fixed floor is straightforwardly correct.
+`default-bond-policy` leaves it **nil** rather than inventing a number — the
+floor belongs to whoever custodies the payments, and nil means *not
+admissible* (fail-closed), never 0.
+
+`:ordering` guards the order of EN transfers, and EN is non-priced,
+non-redeemable and convertible to nothing (ADR-2607995000 §1). The protocol
+therefore **cannot compute** what a successful equivocation is worth without
+putting an external price on EN — which is exactly the back door §3 of that
+ADR closed when it repealed per-transfer external-asset fees. This is *not* a
+claim that equivocation is harmless: a counterparty who hands over real goods
+for double-spent EN loses something real. It is that the loss is the
+counterparty's own private valuation, unavailable to the protocol.
+
+So `:ordering`'s floor is a **governance parameter, not a formula** —
+`bootstrap-ordering-min-bond` is **0**, with an objective trigger for raising
+it: the first EN transfer between two agents where neither is the operator.
+That is now measurable (`engi.metrics` → `:external-counterparties`), so the
+question has a checkable answer instead of a judgement call. The previous
+`min-bond: 500` was quoted while no escrow contract existed to accept it, and
+the count of external witnesses who ever bonded is 0.
+
+The cost is stated, not buried: **an unbonded witness set has no Sybil
+resistance.** `quorum-met?` returns a map rather than a boolean for exactly
+this reason —
+
+```clojure
+(stake/quorum-met? voted bonds witnesses)
+;; bonded:   {:met? true :basis :stake-weighted   :sybil-resistant? true  ...}
+;; unbonded: {:met? true :basis :counted-unbonded :sybil-resistant? false :why "..."}
+```
+
+— so a caller cannot get the security property wrong by only checking
+`:met?`. The unbonded branch is a **liveness arrangement among an enumerated
+roster, not Byzantine security**, appropriate only while there is nothing to
+steal. `stake-quorum-met?` itself is unchanged, and so is
+`(eligible-witnesses bonds min-bond role)` for callers who genuinely want a
+single uniform floor.
 
 ## Layout
 
