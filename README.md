@@ -162,6 +162,22 @@ ENGI_SECRET_KEY_B64=<base64 ed25519 seed> \
       bin/engi_metrics.cljs --json
 ```
 
+**Independence is not inferred.** `:external-counterparties` is only computed
+when the caller explicitly passes `:affiliated-dids` — every DID whose key the
+operator controls, ephemeral test agents included. Without it the field is
+`:affiliation-unknown`, and `trigger-fired?` returns that keyword rather than a
+`true`/`false` anyone could act on.
+
+This is a correction, not a nicety: the first version excluded only the operator
+DID, and this repo's own live test mints two throwaway `did:key`s and drives a
+real transfer between them against production — neither is the operator DID, so
+both would have been reported as independent and **would have tripped
+`engi.stake`'s `:ordering` bond-floor trigger on a test run**. A measurement
+that its own test suite can trip is worse than no measurement, because it gets
+trusted. A `did:key` is just a keypair, so independence cannot be proven
+cryptographically; the metric is exactly as good as the affiliation set it is
+handed, and it now says so.
+
 It reads exactly **one** graph — the one owned by that key. That is not a
 shortcut: kotobase.net's apex requires a CACAO on every call and only a
 graph's own key can mint a satisfying one, so a third party gets 401 reading

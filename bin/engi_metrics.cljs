@@ -19,9 +19,10 @@
   opts:
     --endpoint URL        default https://kotobase.net
     --operator-did DID    default did:web:kotobase.net
-    --exclude-did DID     treat this DID as the operator when computing
-                          :external-counterparties (repeatable). Defaults to
-                          the operator-did.
+    --affiliated-did DID  a DID whose key the OPERATOR CONTROLS (repeatable).
+                          Required for :external-counterparties to be computed
+                          at all -- see the warning below. The DID being read is
+                          always affiliated (it is the key you supplied).
     --json                emit JSON instead of EDN
 
   ── what this can and cannot see, stated up front ──────────────────────────
@@ -50,13 +51,13 @@
             [kotobase.client :as client]))
 
 (defn- parse-args [argv]
-  (loop [[a & more] argv acc {:exclude #{}}]
+  (loop [[a & more] argv acc {:affiliated #{}}]
     (cond
       (nil? a) acc
       (= a "--json") (recur more (assoc acc :json? true))
       (= a "--endpoint") (recur (rest more) (assoc acc :endpoint (first more)))
       (= a "--operator-did") (recur (rest more) (assoc acc :operator-did (first more)))
-      (= a "--exclude-did") (recur (rest more) (update acc :exclude conj (first more)))
+      (= a "--affiliated-did") (recur (rest more) (update acc :affiliated conj (first more)))
       :else (recur more acc))))
 
 (defn- die! [msg]
@@ -64,7 +65,7 @@
   (process/exit 1))
 
 (defn -main [& argv]
-  (let [{:keys [endpoint operator-did exclude json?]} (parse-args argv)
+  (let [{:keys [endpoint operator-did affiliated json?]} (parse-args argv)
         endpoint (or endpoint store/default-endpoint)
         operator-did (or operator-did store/default-operator-did)
         secret-b64 (some-> (.-ENGI_SECRET_KEY_B64 process/env) str/trim not-empty)]
@@ -79,19 +80,25 @@
           c (client/make-client {:endpoint endpoint
                                  :operator-did operator-did
                                  :secret-key secret-key})
-          excluded (if (seq exclude) exclude #{operator-did})]
+          ;; The DID we are reading is affiliated by construction: we hold its
+          ;; key. Everything else must be declared -- passing no --affiliated-did
+          ;; leaves :external-counterparties :affiliation-unknown rather than
+          ;; producing a confident-looking list (engi.metrics docstring: the
+          ;; first version of this trigger could be tripped by this repo's own
+          ;; live test, whose throwaway agents are not the operator DID).
+          affiliated (conj (set affiliated) did)]
       (-> (store/fetch-entities! c)
           (.then
            (fn [entities]
              (let [persisted (metrics/funnel-from-entities
-                              entities {:counterparties-excluding excluded})
+                              entities {:affiliated-dids affiliated})
                    ;; no emitter ran in this process, so the top of the funnel is
                    ;; genuinely unobserved -- say so rather than printing zeros.
                    [counts observed] (metrics/merge-funnel persisted {})
                    body (assoc (metrics/counts->response counts observed)
                                :did did
                                :endpoint endpoint
-                               :excluded-dids (vec (sort excluded))
+                               :affiliated-dids (vec (sort affiliated))
                                :counterparties (:counterparties persisted)
                                :external-counterparties (:external-counterparties persisted)
                                :distinct-transfer-ids (:distinct-transfer-ids persisted)
@@ -99,13 +106,30 @@
                (println (if json?
                           (js/JSON.stringify (clj->js body) nil 2)
                           (with-out-str (pprint/pprint body))))
-               (when (empty? (:external-counterparties persisted))
-                 (binding [*print-fn* *print-err-fn*]
-                   (println (str "\nNOTE: zero counterparties outside " (pr-str (vec (sort excluded)))
-                                 " -- the EN loop has still never fired between two "
-                                 "non-operator agents. This is the measurement the "
-                                 "system-dynamics pass called for, and it is currently a "
-                                 "measured 0, not an unmeasured one.")))))))
+               (binding [*print-fn* *print-err-fn*]
+                 (let [fired (metrics/trigger-fired? persisted)]
+                   (cond
+                     (= :affiliation-unknown fired)
+                     (println "\nNOTE: :external-counterparties is :affiliation-unknown.")
+
+                     (false? fired)
+                     (println (str "\nNOTE: zero counterparties outside "
+                                   (pr-str (vec (sort affiliated)))
+                                   " -- the EN loop has still never fired with an agent "
+                                   "the operator does not control. A measured 0, not an "
+                                   "unmeasured one -- but only as good as that list: any "
+                                   "operator-held key omitted from it would show up here "
+                                   "as independent."))
+
+                     :else
+                     (println (str "\nTRIGGER: counterparties outside the declared "
+                                   "affiliated set: "
+                                   (pr-str (:external-counterparties persisted))
+                                   ". Per engi.stake/bootstrap-ordering-min-bond this is "
+                                   "the condition for revisiting the :ordering bond floor "
+                                   "-- CHECK FIRST that none of these are operator-held "
+                                   "keys (ephemeral live-test agents are the known false "
+                                   "positive) before acting on it.")))))))))
           (.catch (fn [e] (die! (str "failed to read graph for " did ": " e))))))))
 
 (apply -main (drop 3 (array-seq process/argv)))
