@@ -164,6 +164,16 @@ account 1, signed with its own validator key, into every block it proposes.
   the thief's order      : refused {:wrong-key 34}
 ```
 
+The first refusal is `:not-your-account` — the thief trying to claim the
+victim's id while it was still unbound, which is exactly where the land-grab
+used to succeed. The 34 after it are `:wrong-key`, once the owner's own
+transaction had bound it.
+
+```
+  rejected {:not-your-account 1, :wrong-key 34}
+  victim (only ever buys) : 1703275343798 -> 38
+```
+
 #### The thief won the first time, and the run said pass
 
 `torihiki` binds an account id to the **first public key that authenticates
@@ -176,10 +186,10 @@ That is what happened. Account 1 ended at **-50, exactly the thief's order**,
 while 34 of the owner's transactions were refused. The run reported PASS,
 because it checked that refusals existed and not **whose** they were.
 
-Accounts are bound at genesis now, which is what a bridge deposit does in a
-real deployment: the thing that creates the account knows the key. The general
-fix is an address derived from the key, which `torihiki.auth` already names as
-the right answer and defers until there is an address format.
+The fix is in `torihiki` now rather than worked around here: a key may only
+bind the id **derived from it**, so there is nothing to race for. See
+torihiki's own README for why the objection to derived ids — that a collision
+is worse than a race — had the comparison backwards.
 
 The assertion that would have caught it is there too — account 1 only ever
 submits buys, so a **short** position is somebody else selling on its behalf.

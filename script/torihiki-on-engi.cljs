@@ -45,10 +45,10 @@
 ;; while 34 of the owner's transactions were refused. The run reported PASS,
 ;; because it checked that refusals existed and not WHOSE they were.
 ;;
-;; Accounts are bound at genesis here, which is what a bridge deposit does in
-;; a real deployment: the thing that creates the account knows the key. The
-;; general fix is an address derived from the key, which torihiki.auth already
-;; names as the right answer and defers until there is an address format.
+;; The fix is in torihiki now, not worked around here: a key may only bind the
+;; id DERIVED FROM IT, so there is nothing to race for. The thief can claim
+;; ids belonging to its own key and no others, and it does not hold the key
+;; for any account that has collateral.
 (ns torihiki-on-engi
   (:require ["ws" :as ws]
             ["node:crypto" :as nc]
@@ -103,14 +103,33 @@
          :taker-fee-rate 350000
          :maker-fee-rate 100000))
 
+(defn- b64 [buf] (.toString buf "base64"))
+
+(defn derive-account
+  "The only account id a public key may claim: 45 bits of its SHA-256, above
+  the ids reserved for the clearinghouse's own roles.
+
+  45 rather than 32 because the book's slab holds i53 — a collision needs tens
+  of millions of accounts rather than tens of thousands — and a collision is
+  refused rather than silent, so the loser can see it and use another key."
+  [pubkey]
+  (let [d (sha256 (js/Buffer.from pubkey "base64"))]
+    (+ 100000
+       (mod (reduce (fn [acc i] (+ (* acc 256) (aget d i))) 0 (range 6))
+            35184372088832))))
+
 (def trader-keys
   "One Ed25519 keypair per trading account. Separate from the validator keys:
   a witness signs blocks and votes, an account authorises spending, and a
   system where those are the same key is a system where a validator is
   everybody."
-  (into {} (for [a [1 2 3]] [a (nc/generateKeyPairSync "ed25519")])))
+  (let [kps (repeatedly 3 #(nc/generateKeyPairSync "ed25519"))]
+    (into {} (for [kp kps]
+               [(derive-account (b64 (.export (.-publicKey kp)
+                                              #js {:format "der" :type "spki"})))
+                kp]))))
 
-(defn- b64 [buf] (.toString buf "base64"))
+(def trader-accounts (vec (sort (keys trader-keys))))
 
 (defn genesis-exchange []
   ;; Funded at genesis rather than by :deposit transactions, because with no
@@ -119,17 +138,10 @@
   ;; torihiki's own README is where that argument lives.
   (-> (st/new-exchange {:market market
                         :book-opts {:n-levels 65536 :cap 16384 :ev-cap 8192}})
-      (st/apply-tx {:tx :deposit :account 1 :amount 100000000})
-      (st/apply-tx {:tx :deposit :account 2 :amount 100000000})
-      (st/apply-tx {:tx :deposit :account 3 :amount 100000000})
-      (st/apply-tx {:tx :oracle :market market-id :price 1000})
-      ;; Bound at genesis, not claimed by first use. See the header: under BFT
-      ;; the Byzantine leader is the one proposing blocks, so first-use
-      ;; binding hands it any account nobody has touched yet.
-      (update :account-keys merge
-              (into {} (for [[a kp] trader-keys]
-                         [a (b64 (.export (.-publicKey kp)
-                                          #js {:format "der" :type "spki"}))])))))
+      (as-> ex (reduce (fn [e a] (st/apply-tx e {:tx :deposit :account a
+                                                 :amount 100000000}))
+                       ex trader-accounts))
+      (st/apply-tx {:tx :oracle :market market-id :price 1000})))
 
 (defn sign-tx
   "A signed envelope, in the shape torihiki.auth/check expects."
@@ -192,7 +204,8 @@
                                    :ts (:engi.block/ts block)
                                    :txs (mapv decode-tx
                                               (:engi.block/proposals block))}
-                               {:chain-id chain-id :verify-fn tx-verify})
+                               {:chain-id chain-id :verify-fn tx-verify
+                                :derive-account derive-account})
                    (as-> ex' (update ex' :refused-so-far (fnil into [])
                                      (map :reason (:rejected ex'))))))
    :root-fn st/state-root})
@@ -206,7 +219,7 @@
   submitting for one account would each pick the same next nonce and one of
   them would be refused, which is correct behaviour and would make this run
   about nonce contention rather than about agreement."
-  {"w1" 1 "w2" 2 "w3" 3})
+  (zipmap ["w1" "w2" "w3"] trader-accounts))
 
 (def byzantine
   "The leader that steals. It has no trading account of its own and injects an
@@ -258,12 +271,13 @@
                    ;; applies it and they all agree on the result — perfect
                    ;; agreement about somebody else spending your position.
                    (when (= (wire/wire-id w) byzantine)
-                     (let [tx {:tx :order :account 1 :market market-id
+                     (let [victim (first trader-accounts)
+                           tx {:tx :order :account victim :market market-id
                                :side 1 :level 900 :qty 50 :flags 0}
-                           payload (auth/signing-payload chain-id 1 1 tx)]
+                           payload (auth/signing-payload chain-id victim 1 tx)]
                        (swap! state r/submit
                               (js/JSON.stringify
-                               (clj->js {:tx tx :account 1 :nonce 1
+                               (clj->js {:tx tx :account victim :nonce 1
                                          :pubkey (b64 (.export
                                                        (.-publicKey (get keys-of byzantine))
                                                        #js {:format "der" :type "spki"}))
@@ -324,7 +338,7 @@
      :last (get-in ex [:last market-id])
      :rejected (frequencies (:refused-so-far ex))
      :positions (into (sorted-map)
-                      (for [a [1 2 3]]
+                      (for [a trader-accounts]
                         [a (:size (get-in ex [:clearing :accounts a :positions market-id])
                                   0)]))}))
 
@@ -358,14 +372,17 @@
     ;; the thief is refused on the BINDING before any signature is checked.
     ;; The expectation here said :bad-signature and the engine was right.
     (let [r (:rejected (first views))
-          refused (+ (get r :wrong-key 0) (get r :bad-signature 0))]
-      (println "  account 1 (only ever buys):" (get (:positions (first views)) 1)
-             (if (neg? (get (:positions (first views)) 1 0))
-               "  <-- SHORT: somebody else sold it"
-               ""))
+          refused (+ (get r :wrong-key 0) (get r :bad-signature 0)
+                     (get r :not-your-account 0))]
+      (let [victim (first trader-accounts)]
+      (println "  victim (only ever buys) :" victim "->"
+               (get (:positions (first views)) victim)
+               (if (neg? (get (:positions (first views)) victim 0))
+                 "  <-- SHORT: somebody else sold it" "")))
     (println "  the thief's order      :"
                (if (pos? refused)
-                 (str "refused " (pr-str (select-keys r [:wrong-key :bad-signature])))
+                 (str "refused " (pr-str (select-keys r [:not-your-account :wrong-key
+                                                        :bad-signature])))
                  "NOT REFUSED")))
     (println "")
     (cond
@@ -374,14 +391,15 @@
       (do (println "TORIHIKI-ON-ENGI: FAIL — no order reached the book") 1)
       (not (apply = views))
       (do (println "TORIHIKI-ON-ENGI: FAIL — same blocks, different exchange") 1)
-      (zero? (+ (get (:rejected (first views)) :wrong-key 0)
+      (zero? (+ (get (:rejected (first views)) :not-your-account 0)
+                (get (:rejected (first views)) :wrong-key 0)
                 (get (:rejected (first views)) :bad-signature 0)))
       (do (println "TORIHIKI-ON-ENGI: FAIL — the Byzantine leader spent account 1") 1)
       ;; account 1 only ever submits buys, so a short position is somebody
       ;; else selling on its behalf. Checking that refusals EXISTED was not
       ;; enough — the first run refused 34 of the owner's own transactions and
       ;; called that a pass.
-      (neg? (get (:positions (first views)) 1 0))
+      (neg? (get (:positions (first views)) (first trader-accounts) 0))
       (do (println "TORIHIKI-ON-ENGI: FAIL — account 1 is short and only ever bought") 1)
       :else
       (do (println "TORIHIKI-ON-ENGI: pass — four replicas, one exchange") 0))))
