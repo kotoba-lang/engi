@@ -588,5 +588,25 @@ client received   : [[:srv :vote] [:srv :rejected :unknown-type]]
 strikes           : 1
 ```
 
-**Not here yet:** signature aggregation, and a server side (this dials out;
-accepting inbound connections is the Worker's job and is not written).
+`engi.net.server` is the other half: accepting inbound peers. With only
+outbound connections, replicas behind anything that does not accept inbound
+never form a mesh, and the ones that cannot dial out at all — a Cloudflare
+Worker, a browser tab — could never be reached.
+
+It runs the **same** policy underneath. An accepted peer gets the same bounded
+queue and the same strike accounting, so a hostile peer costs the same whether
+it called us or we called it. A server path with its own looser rules is the
+usual way a careful client gets undone.
+
+Verified with both halves on real sockets (`script/check-ws-both-ends.cljs`),
+because a fake on either side leaves the other end untested — and the untested
+end has been the wrong one every time so far:
+
+```
+server accepted   : ["in-1"]
+server saw        : [["in-1" :new-view] ["in-1" :rejected :unknown-type]]
+client saw        : [[:hub :vote]]
+inbound strikes   : 1
+```
+
+**Not here yet:** signature aggregation.
