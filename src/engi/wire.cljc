@@ -55,7 +55,7 @@
 
 (defn- nat? [x] (and (integer? x) (>= x 0)))
 
-(defn- wire-id
+(defn wire-id
   "An identifier as it travels. `str` is the obvious choice and it is wrong:
   `(str :w1)` is `\":w1\"`, so a keyword witness comes back from the wire as a
   DIFFERENT identifier than it left as — and `engi.consensus/qc` counts
@@ -64,7 +64,16 @@
 
   Dropping the leading colon rather than calling `name` keeps a namespaced
   keyword whole: `name` would turn `:org/w1` and `:other/w1` into the same
-  string, which is worse than the bug this replaces."
+  string, which is worse than the bug this replaces.
+
+  Public because a replica has to normalise its own ids the same way. This
+  docstring already named the failure — 'a certificate assembled from wire
+  messages and one assembled locally would disagree about who signed it' —
+  and that is exactly what happened the first time four replicas were run
+  over real sockets: a replica recorded its own vote under ':w1' and its
+  peers' under 'w1', so one physical witness counted as two and a quorum of
+  three could be two replicas. Encoding correctly is only half of it; the
+  local side has to speak the same language."
   [x]
   (if (keyword? x) (subs (str x) 1) (str x)))
 

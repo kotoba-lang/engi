@@ -12,6 +12,70 @@ design depended on and which was lost with the Rust workspace deletion
 agent-centric credit between two `did:key` agents — exactly HoloFuel's
 model, adapted to kotobase.net's actual, live-probed constraints (below).
 
+## Nobody had ever run it
+
+Ten namespaces, a thousand assertions, and no replica. `engi.consensus` built
+blocks and certificates, `engi.pacemaker` decided when a view had failed,
+`engi.sync` decided what a lagging replica could believe, `engi.attest` signed
+and verified, `engi.net` decided who to spend bandwidth on, `engi.wire` said
+what a message was — all tested, none composed. **A block had never been
+proposed, voted on, certified and committed.**
+
+That is invisible from a test suite, and it is the same shape as a terminal
+whose client is compiled, deployed and never referenced from the page: every
+part green, the whole thing never executed.
+
+`engi.replica` is the composition — pure, message-driven, `[state' outbox]` —
+and `script/network.cljs` runs four of them over real WebSockets:
+
+```
+four replicas on ports 19301–19304 · quorum 3 of 4
+
+  w1  height 86  committed 84 (85 blocks)  view 86  msgs 644in/107out
+  w2  height 86  committed 84 (85 blocks)  view 86  msgs 642in/108out
+  w3  height 86  committed 84 (85 blocks)  view 85  msgs 640in/108out
+  w4  height 86  committed 84 (85 blocks)  view 85  msgs 642in/107out
+
+  common committed prefix: 85 blocks
+  all replicas agree     : true
+```
+
+### Three bugs, and the deterministic test could see none of them
+
+Each was found by running, and each was invisible to a map-for-a-transport
+test because that test has no clock and no wire.
+
+**A replica did not record its own votes.** Only the leader ever held enough
+votes to certify anything, because it was the only replica receiving the
+other three. A transport detail was silently setting the quorum threshold.
+
+**Votes were keyed by `[view block-hash]`.** The worry was real — two views
+can certify blocks at the same height — but the hash already answers it: the
+hash covers height, parent, proposals, proposer and timestamp, so two views
+cannot produce one hash. What the view in the key actually did was split votes
+by the *voter's local* view, and replicas time out at slightly different
+moments, so three votes for one block sat in three buckets and nobody reached
+quorum. With no timeouts firing, the two keys are the same key.
+
+**A replica voted at most once per VIEW.** Views advance on timeout; heights
+advance on progress. So a replica that voted at view 0 for height 1 could not
+vote for height 2, or ever again, until something timed out — and the thing
+that would have timed out was the chain it had just refused to extend. It
+stalled at height two with every replica holding enough votes to go on. The
+property worth having is one vote per *height*, and that is what it does now.
+
+### And one the wire had already predicted
+
+`engi.wire/wire-id` sends the keyword `:w1` as the string `w1`, and its
+docstring said what would happen if only one side did that: *"a certificate
+assembled from wire messages and one assembled locally would disagree about
+who signed it."* Exactly that. A replica recorded its own vote under the
+keyword and its peers' under the string, so one physical witness counted as
+two — **a quorum of three could be two replicas, one of them twice.**
+
+Every id entering `engi.replica` is normalised to its wire form, including the
+replica's own. Encoding correctly was only half of it.
+
 ## Schema
 
 Every agent (`did:key`) owns exactly one graph: `kotobase/db/<did:key>/engi`

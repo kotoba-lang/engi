@@ -1,1 +1,1 @@
-{"name":"engi-net-check","private":true,"type":"module","devDependencies":{"ws":"^8.18.0"}}
+{"name":"engi-net-check","private":true,"type":"module","devDependencies":{"ws":"^8.18.0"},"dependencies":{"@noble/curves":"^2.2.0","@noble/hashes":"^2.2.0"}}

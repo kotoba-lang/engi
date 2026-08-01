@@ -1,0 +1,381 @@
+(ns engi.replica
+  "A replica: the thing that actually runs consensus.
+
+  Everything else in this repo is a correct piece of a protocol nobody had
+  assembled. `engi.consensus` builds blocks, votes and certificates;
+  `engi.pacemaker` decides when a view has failed; `engi.sync` decides what a
+  lagging replica may believe; `engi.attest` signs and verifies; `engi.net`
+  decides who to spend bandwidth on; `engi.wire` says what a message is. All
+  of them are tested. **None of them had ever been composed into something
+  that proposes a block, collects votes, forms a certificate, and commits.**
+
+  That gap is not visible from a test suite. It is the same shape as a
+  terminal whose client was compiled, deployed, and never referenced from the
+  page: every part green, the whole thing never executed.
+
+  ## Every witness id is normalised to its wire form
+
+  `engi.wire` sends the keyword :w1 as the string w1, so a replica that
+  recorded its own vote
+  under the keyword and its peers' under the string counted one physical
+  witness as two — and a quorum of three could be two replicas plus one of
+  them twice. Every id entering this namespace goes through `wire/wire-id`,
+  including the replica's own, so there is exactly one spelling of a witness.
+
+  ## Pure, and message-driven
+
+  `on-message` and `on-tick` take a state and return `[state' outbox]`, where
+  the outbox is a vector of `{:to :all|<witness> :msg m}`. Nothing here opens
+  a socket, reads a clock, or hashes anything: `hash-fn` and the signing seam
+  are injected, for the same reason they are everywhere else — a browser that
+  cannot import a JVM crypto library still has to be able to check a chain.
+
+  That also makes a four-replica network an ordinary unit test with a map for
+  a transport, so the properties below are asserted deterministically rather
+  than observed once in a lucky run.
+
+  ## Votes are broadcast, not sent to the leader
+
+  Classic HotStuff routes votes to the next leader, who alone forms the
+  certificate. Here every replica sees every vote and forms the certificate
+  itself. It costs O(n²) messages instead of O(n), which for a validator set
+  of this size is nothing, and it buys two things worth more: a replica's
+  progress no longer depends on the leader being honest enough to relay a
+  certificate it could have withheld, and every replica can be asked what it
+  has committed without asking the leader.
+
+  ## One vote per HEIGHT
+
+  A replica records the heights it has voted at and never votes twice at one.
+  Equivocation is the thing certificates exist to prevent, and a replica that
+  can be talked into voting twice by a proposer that sends two blocks is a
+  Byzantine replica written by accident.
+
+  Per height rather than per view, which is what this tried first and is a
+  bug that only a running network shows. Views advance on TIMEOUT; heights
+  advance on progress. So a replica that voted at view 0 for height 1 could
+  not vote for height 2, or 3, or ever again, until something timed out — and
+  the thing that would have timed out was the chain it had just refused to
+  extend. It stalled at height two with every replica holding enough votes to
+  go on.
+
+  The property worth having is that a replica never votes twice AT A HEIGHT,
+  and that is the one stated here."
+  (:require [engi.consensus :as c]
+            [engi.pacemaker :as pm]
+            [engi.quorum :as q]
+            [engi.wire :as wire]))
+
+(def default-params
+  (merge pm/default-params
+         {;; A leader that has just certified a block does not propose the
+          ;; next one instantly — the interval is what stops a fast network
+          ;; from producing blocks faster than anything downstream reads them.
+          :block-interval 100}))
+
+(defn replica
+  "Initial state.
+
+  `quorum` is anything `engi.quorum/->predicate` accepts. An integer means a
+  head count and is right for a managed set; under permissionless admission
+  pass `engi.quorum/stake-weighted`, because head-counting is what a Sybil
+  defeats."
+  [{:keys [witness witnesses quorum genesis hash-fn params]}]
+  (let [params (merge default-params params)
+        witness (wire/wire-id witness)
+        witnesses (mapv wire/wire-id witnesses)
+        g (or genesis (c/make-block {:height 0 :parent-hash "genesis"
+                                     :proposals [] :proposer (first witnesses)
+                                     :ts 0 :justify nil}))]
+    {:witness witness
+     :witnesses (vec witnesses)
+     :quorum (or quorum (count witnesses))
+     :hash-fn hash-fn
+     :params params
+     :pm (pm/initial witness)
+     :chain [g]
+     :by-hash {(hash-fn g) g}
+     ;; votes seen, grouped by [view block-hash]; new-views by view
+     :votes {}
+     :new-views {}
+     ;; the heights this replica has voted at — never two votes at one height
+     :voted #{}
+     :qcs {}
+     :committed []
+     :pending []
+     :last-proposed-at 0}))
+
+;; ── the chain ───────────────────────────────────────────────────────────────
+
+(declare adopt-own fold-vote cast-vote propose handle-new-view)
+
+(defn tip [state] (peek (:chain state)))
+
+(defn height [state] (:engi.block/height (tip state)))
+
+(defn- ancestor?
+  "Is the block named by `hash` an ancestor of (or equal to) `block`?
+
+  Walks parent links through what this replica actually holds. A replica that
+  answered from the proposer's claims instead would be letting the proposer
+  decide whether its own block was safe to vote for."
+  [state hash block]
+  (loop [b block n 0]
+    (cond
+      (nil? b) false
+      (> n 1024) false                    ; a cycle is a hostile chain, not a long one
+      (= hash ((:hash-fn state) b)) true
+      :else (recur (get (:by-hash state) (:engi.block/parent-hash b)) (inc n)))))
+
+(defn- commits
+  "Blocks newly committed by the 3-chain rule, in order."
+  [state]
+  (let [all (c/three-chain-commits (:hash-fn state) (:chain state))
+        already (count (:committed state))]
+    (vec (drop already all))))
+
+(defn- absorb-commits [state]
+  (let [new (commits state)]
+    (update state :committed into new)))
+
+;; ── proposing ───────────────────────────────────────────────────────────────
+
+(defn- my-turn?
+  [state h]
+  (= (:witness state) (c/leader-for (:witnesses state) h)))
+
+(defn- propose
+  "Build the next block on the tip, if this replica leads that height and
+  holds a certificate for the tip. Returns `[state' outbox]`.
+
+  The QC requirement is the whole point: a proposal carries the certificate
+  for its parent, so a replica receiving it can check that the parent was
+  certified rather than merely named. Proposing without one would be
+  proposing a chain nobody agreed to."
+  [state now]
+  (let [t (tip state)
+        h (inc (:engi.block/height t))
+        parent-hash ((:hash-fn state) t)
+        justify (get (:qcs state) parent-hash)]
+    (if (and justify
+             (my-turn? state h)
+             (>= now (+ (:last-proposed-at state) (:block-interval (:params state)))))
+      (let [b (c/make-block {:height h :parent-hash parent-hash
+                             :proposals (:pending state)
+                             :proposer (:witness state) :ts now
+                             :justify justify})
+            [state' out] (adopt-own state b now)]
+        [(assoc state' :pending [] :last-proposed-at now)
+         (into [{:to :all :msg {:type :proposal :block b}}] out)])
+      [state []])))
+
+;; ── incoming ────────────────────────────────────────────────────────────────
+
+(defn- remember-block [state b]
+  (update state :by-hash assoc ((:hash-fn state) b) b))
+
+(defn- extend-chain
+  "Append `b` when it directly extends the tip. Returns state.
+
+  A block that does not extend the tip is kept in `:by-hash` but not adopted:
+  it may be a fork, or it may be the future arriving before the past, and
+  either way the chain a replica votes on must be one it can walk."
+  [state b]
+  (if (c/direct-extends? (:hash-fn state) (tip state) b)
+    (-> state (update :chain conj b) absorb-commits)
+    state))
+
+(defn- handle-proposal
+  [state {:keys [block]} now]
+  (let [state (remember-block state block)
+        hf (:hash-fn state)
+        parent (get (:by-hash state) (:engi.block/parent-hash block))
+        h (:engi.block/height block)]
+    (cond
+      ;; nothing to check it against — ask for what is missing rather than
+      ;; voting on a block whose parent this replica has never seen
+      (nil? parent)
+      [state [{:to :all :msg {:type :sync-request
+                              :from (inc (height state))
+                              :to (:engi.block/height block)}}]]
+
+      (not (c/direct-extends? hf parent block))
+      [state []]
+
+      (contains? (:voted state) h)
+      [(extend-chain state block) []]
+
+      (not (pm/safe-to-vote? (:pm state) block #(ancestor? state %1 %2)))
+      [(extend-chain state block) []]
+
+      :else
+      (cast-vote (extend-chain state block) block now))))
+
+(defn- fold-vote
+  "Collect a vote and, on quorum, form the certificate.
+
+  Votes are grouped by BLOCK HASH, and deliberately not by [view block-hash].
+
+  Keying by view as well was the first thing this got wrong, and it does not
+  show up until the network is real. The worry it was written for — two views
+  certifying blocks at the same height — is answered by the hash itself: the
+  hash covers the height, parent, proposals, proposer and timestamp, so two
+  views cannot produce one hash, and every vote carrying a given hash is a
+  vote for the same decision by construction.
+
+  What keying by view actually did was split those votes by the VOTER's local
+  view. Replicas time out at slightly different moments, so their views drift
+  apart by one, and then three votes for the same block sit in three different
+  buckets and quorum is never reached by anyone. The chain stalled at height
+  two while every replica held enough votes to certify it.
+
+  Nothing in the deterministic test could see this: with no timeouts firing,
+  every replica stayed in view 0 and the two keyings are the same key.
+
+  The certificate takes the HIGHEST view among its votes, which is what the
+  pacemaker orders locks by — taking the lowest would let a certificate formed
+  late lose to one formed earlier for a block it supersedes.
+
+  A replica folds its OWN vote through here too. Recording only what arrives
+  over the network would mean every replica was one vote short of what it
+  actually knows, and with a four-witness set that is the difference between
+  reaching quorum and never reaching it — a transport detail silently setting
+  the quorum threshold."
+  [state {:keys [witness block-hash height view]} now]
+  (let [witness (wire/wire-id witness)
+        state (update-in state [:votes block-hash] (fnil assoc {}) witness
+                         (assoc (c/make-vote witness block-hash height)
+                                :engi.vote/view view))
+        votes (vals (get-in state [:votes block-hash]))
+        view (apply max (map #(:engi.vote/view % 0) votes))]
+    (if (and (q/met? (:quorum state) (set (map :engi.vote/witness votes)))
+             (not (get-in state [:qcs block-hash])))
+      (let [cert (c/qc (vec votes) (count (:witnesses state)) view)]
+        (if cert
+          (let [state (-> state
+                          (assoc-in [:qcs block-hash] cert)
+                          (update :pm pm/on-qc cert)
+                          (update :pm pm/on-progress cert now (:params state))
+                          absorb-commits)]
+            (propose state now))
+          [state []]))
+      [state []])))
+
+(defn- cast-vote
+  "Vote for `block` at the current view: record it locally and emit it.
+
+  Returns `[state' outbox]`. The local record is not an optimisation — see
+  `fold-vote`."
+  [state block now]
+  (let [hf (:hash-fn state)
+        view (:view (:pm state))
+        bh (hf block)
+        ht (:engi.block/height block)
+        msg {:type :vote :witness (:witness state) :block-hash bh
+             :height ht :view view}
+        [state' out] (fold-vote (update state :voted conj ht)
+                                {:witness (:witness state) :block-hash bh
+                                 :height ht :view view}
+                                now)]
+    [state' (into [{:to :all :msg msg}] out)]))
+
+(defn- adopt-own
+  "A proposer adopts and votes for its own block.
+
+  Leaving this out made the leader the only replica that could certify
+  anything — it was the only one holding every other replica's vote — and it
+  never advanced its own chain, so it re-proposed the same height forever
+  while the rest of the network waited for a proposal that already existed."
+  [state b now]
+  (let [state (-> state (remember-block b) (extend-chain b))]
+    (if (contains? (:voted state) (:engi.block/height b))
+      [state []]
+      (cast-vote state b now))))
+
+(defn- handle-new-view
+  [state {:keys [witness view high-qc]} now]
+  (let [witness (wire/wire-id witness)
+        state (update-in state [:new-views view] (fnil assoc {}) witness
+                         {:engi.nv/witness witness :engi.nv/view view
+                          :engi.nv/high-qc high-qc})
+        msgs (vals (get-in state [:new-views view]))]
+    (if-let [tc (pm/timeout-certificate (vec msgs) (:quorum state))]
+      (let [state (update state :pm pm/on-timeout-certificate tc now (:params state))]
+        (propose state now))
+      [state []])))
+
+(defn- handle-sync-request
+  [state {:keys [from to]}]
+  (let [blocks (->> (:chain state)
+                    (filter #(<= from (:engi.block/height %) to))
+                    vec)]
+    [state (if (seq blocks)
+             [{:to :all :msg {:type :sync-response :blocks blocks}}]
+             [])]))
+
+(defn- handle-sync-response
+  [state {:keys [blocks]}]
+  [(reduce (fn [s b] (-> s (remember-block b) (extend-chain b)))
+           state
+           (sort-by :engi.block/height blocks))
+   []])
+
+(defn on-message
+  "Fold one decoded message. Returns `[state' outbox]`.
+
+  Total: an unknown type is ignored rather than thrown from. A replica that
+  can be stopped by a message is a replica anybody can stop."
+  [state msg now]
+  (case (:type msg)
+    :proposal (handle-proposal state msg now)
+    :vote (fold-vote state msg now)
+    :new-view (handle-new-view state msg now)
+    :sync-request (handle-sync-request state msg)
+    :sync-response (handle-sync-response state msg)
+    [state []]))
+
+(defn on-tick
+  "Time passed. Times the view out when the deadline has gone by, and
+  proposes when this replica leads and holds a certificate for the tip."
+  [state now]
+  (let [pmst (:pm state)]
+    (if (and (pos? (:deadline pmst)) (pm/expired? pmst now))
+      (let [[pm' nv] (pm/on-timeout pmst now (:failures pmst 0) (:params state))]
+        (let [msg {:type :new-view :witness (:witness state)
+                   :view (:engi.nv/view nv) :high-qc (:engi.nv/high-qc nv)}
+              [state' out] (handle-new-view (assoc state :pm pm') msg now)]
+          [state' (into [{:to :all :msg msg}] out)]))
+      (propose state now))))
+
+(defn start
+  "The first proposal. Genesis has no certificate, so the height-1 leader
+  cannot reach `propose`'s QC requirement — this is the one place a block is
+  proposed without one, and it is the same exception `three-chain-commits`
+  makes for genesis."
+  [state now]
+  (let [g (tip state)
+        h 1]
+    (if (my-turn? state h)
+      (let [b (c/make-block {:height h :parent-hash ((:hash-fn state) g)
+                             :proposals (:pending state)
+                             :proposer (:witness state) :ts now
+                             :justify (c/qc [(c/make-vote (:witness state)
+                                                          ((:hash-fn state) g) 0)]
+                                            1 0)})
+            [state' out] (adopt-own state b now)]
+        [(assoc state' :pending [] :last-proposed-at now)
+         (into [{:to :all :msg {:type :proposal :block b}}] out)])
+      [state []])))
+
+(defn submit
+  "Queue a proposal (a TransferBody CID) for the next block this replica
+  leads. Bounded, because an unbounded mempool is a memory attack that needs
+  no invalid data."
+  ([state cid] (submit state cid 4096))
+  ([state cid cap]
+   (if (>= (count (:pending state)) cap)
+     state
+     (update state :pending conj cid))))
+
+(defn committed-height [state]
+  (if-let [b (peek (:committed state))] (:engi.block/height b) -1))
