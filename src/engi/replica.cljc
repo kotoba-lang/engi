@@ -13,6 +13,32 @@
   terminal whose client was compiled, deployed, and never referenced from the
   page: every part green, the whole thing never executed.
 
+  ## Committed blocks execute, which is the entire point of ordering them
+
+  A consensus protocol that agrees on an order and applies nothing has agreed
+  on nothing anybody wanted. Until this existed, `:committed` was a list of
+  blocks the replicas concurred about and no replica did anything with, and
+  the property being demonstrated — four processes agreeing on a sequence —
+  was weaker than it looked, because agreeing on the ORDER is easy to get
+  right by accident when nothing depends on the result.
+
+  The machine is injected as `{:state s0 :apply-fn ... :root-fn ...}`, where
+  apply-fn takes a state and a block and returns the next state, and root-fn
+  takes a state and returns a string. `engi` does not know what a transaction is
+  and must not — that is `torihiki.state` for a trading chain and
+  `engi.core` for transfers, and a consensus layer that imported either would
+  be a consensus layer for exactly one application.
+
+  Only COMMITTED blocks are applied, and exactly once each, in order. Applying
+  an adopted-but-uncommitted block would be applying a block that can still be
+  replaced, and undoing it afterwards is the thing the 3-chain rule exists to
+  make unnecessary.
+
+  With a machine configured, `state-root` is what a replica actually agrees to
+  — and two replicas that committed the same blocks and derived different
+  roots have found a determinism bug, which is the failure the root exists to
+  surface and the reason it is worth computing at all.
+
   ## Equivocation is recorded, because it is the one crime that proves itself
 
   Two votes from one witness at one height for different blocks, both signed
@@ -146,7 +172,7 @@
   pass `engi.quorum/stake-weighted`, because head-counting is what a Sybil
   defeats."
   [{:keys [witness witnesses quorum genesis hash-fn params
-           chain-id sign-fn verify-fn]}]
+           chain-id sign-fn verify-fn machine]}]
   (let [params (merge default-params params)
         witness (wire/wire-id witness)
         witnesses (mapv wire/wire-id witnesses)
@@ -180,6 +206,12 @@
      ;; sent a second one for a different block
      :first-vote {}
      :equivocations []
+     ;; The state machine committed blocks are applied to. nil means the
+     ;; replica orders blocks and executes nothing, which is a legitimate role
+     ;; (an ordering service) and a misleading default for anything else — so
+     ;; `state-root` returns nil rather than a plausible-looking constant.
+     :machine machine
+     :machine-state (:state machine)
      :committed []
      :pending []
      :last-proposed-at 0}))
@@ -213,9 +245,18 @@
         already (count (:committed state))]
     (vec (drop already all))))
 
-(defn- absorb-commits [state]
-  (let [new (commits state)]
-    (update state :committed into new)))
+(defn- absorb-commits
+  "Record newly committed blocks and run them through the machine.
+
+  Exactly once each, in order, and only once COMMITTED — applying a block that
+  is merely adopted would be applying one that can still be replaced, and
+  undoing it afterwards is what the 3-chain rule exists to make unnecessary."
+  [state]
+  (let [new (commits state)
+        apply-fn (:apply-fn (:machine state))]
+    (cond-> (update state :committed into new)
+      (and apply-fn (seq new))
+      (update :machine-state #(reduce apply-fn % new)))))
 
 ;; ── proposing ───────────────────────────────────────────────────────────────
 
@@ -542,6 +583,16 @@
   [state verify-sig-fn]
   (vec (filter #(stake/verify-equivocation-evidence % verify-sig-fn)
                (:equivocations state))))
+
+(defn state-root
+  "What this replica has actually agreed to, or nil when it runs no machine.
+
+  nil rather than a constant: a replica that orders blocks and executes
+  nothing has no state to root, and returning a plausible-looking zero would
+  make every such replica agree with every other for the wrong reason."
+  [state]
+  (when-let [f (:root-fn (:machine state))]
+    (f (:machine-state state))))
 
 (defn committed-height [state]
   (if-let [b (peek (:committed state))] (:engi.block/height b) -1))

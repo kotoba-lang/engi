@@ -110,6 +110,40 @@ without it.
   locks hijacked         : 0
 ```
 
+### Committed blocks execute, which is the point of ordering them
+
+A consensus protocol that agrees on an order and applies nothing has agreed on
+nothing anybody wanted. `:committed` was a list of blocks four replicas
+concurred about and no replica did anything with — and the property being
+demonstrated was weaker than it looked, because **agreeing on the order is
+easy to get right by accident when nothing depends on the result**.
+
+The machine is injected: `{:state s0 :apply-fn ... :root-fn ...}`. `engi` does
+not know what a transaction is and must not — that is `torihiki.state` for a
+trading chain and `engi.core` for transfers, and a consensus layer that
+imported either would be a consensus layer for exactly one application.
+
+Only **committed** blocks are applied, exactly once each, in order. Applying a
+block that is merely adopted would be applying one that can still be replaced,
+and undoing it afterwards is what the 3-chain rule exists to make unnecessary.
+
+The harness machine is deliberately order-sensitive — it folds each block into
+a running digest — because a machine whose result did not depend on the order
+would make agreement on the order untestable, which is the only thing this
+protocol produces.
+
+```
+  common committed prefix: 113 blocks
+  all replicas agree     : true
+  same state at block 112 : true (113:c51298e1f1da50a1)
+```
+
+Roots are compared at the same committed height, since replicas are
+legitimately a block or two apart at any instant. `state-root` is nil without
+a machine rather than a plausible-looking constant: a replica that orders
+blocks and executes nothing has no state to root, and a zero would make every
+such replica agree with every other for the wrong reason.
+
 ### The one crime that proves itself
 
 Two votes from one witness at one height for different blocks, both signed and

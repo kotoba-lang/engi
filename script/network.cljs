@@ -96,6 +96,30 @@
   "The block w4 casts its second vote for. Nobody proposed it."
   "0000equivocation0000equivocation0000equivocation0000equivocation")
 
+(def machine
+  "A real state machine over the blocks consensus commits.
+
+  Deliberately small and deliberately order-SENSITIVE: it folds each block's
+  proposals into a running digest, so two replicas that committed the same
+  blocks in different orders — or applied one twice, or skipped one — produce
+  different roots. A machine whose result did not depend on the order would
+  make agreement on the order untestable, which is the only thing this whole
+  protocol produces.
+
+  engi does not know what a transaction is and must not: this stands in for
+  torihiki.state/apply-block on a trading chain and engi.core on a transfer
+  ledger, and a consensus layer that imported either would be a consensus
+  layer for exactly one application."
+  {:state {:height -1 :applied 0 :digest "genesis"}
+   :apply-fn (fn [st b]
+               {:height (:engi.block/height b)
+                :applied (inc (:applied st))
+                :digest (hex (sha256 (.encode (js/TextEncoder.)
+                                              (str (:digest st) "|"
+                                                   (:engi.block/height b) "|"
+                                                   (c/canonical-block b)))))})
+   :root-fn (fn [st] (str (:applied st) ":" (subs (:digest st) 0 16)))})
+
 (defn vote-verifier
   "`engi.stake`'s `verify-sig-fn` shape: one vote in, boolean out.
 
@@ -117,7 +141,8 @@
                                 :hash-fn hash-fn
                                 :chain-id chain-id
                                 :sign-fn (sign-as w)
-                                :verify-fn verify-fn}))
+                                :verify-fn verify-fn
+                                :machine machine}))
         registry (atom {})
         sent (atom 0)
         recv (atom 0)
@@ -282,6 +307,8 @@
                " view" (:view (:pm s))
                " msgs" (str (:recv cnt) "in/" (:sent cnt) "out")
                " peers" (str (:in cnt) "in/" (:out cnt) "out"))
+      (println "        applied" (:applied (:machine-state s))
+               " root" (r/state-root s))
       (println "        certificates" (count (:qcs s))
                " voted at heights 1.." (apply max 0 (:voted s))
                " chain length" (count (:chain s)))))
@@ -311,6 +338,18 @@
         hijacked (count (filter #(= forged-hash
                                     (get-in @(:state %) [:pm :locked-qc :engi.qc/block-hash]))
                                 nodes))
+        roots (map (fn [n] [(count (:committed @(:state n))) (r/state-root @(:state n))])
+                   nodes)
+        min-applied (apply min (map first roots))
+        ;; compare each replica's root AT THE SAME committed height, since
+        ;; replicas are legitimately a block or two apart at any instant
+        roots-at (map (fn [n]
+                        (let [s @(:state n)
+                              prefix (take min-applied (:committed s))]
+                          ((:root-fn machine)
+                           (reduce (:apply-fn machine) (:state machine) prefix))))
+                      nodes)
+        roots-agree? (apply = roots-at)
         signed-certs? (every? (fn [n]
                                 (let [s @(:state n)]
                                   (every? #(att/signed? (val %)) (:qcs s))))
@@ -318,6 +357,8 @@
     (println "")
     (println "  common committed prefix:" shortest "blocks")
     (println "  all replicas agree     :" agree?)
+    (println "  same state at block" (dec min-applied) ":" roots-agree?
+             (str "(" (first roots-at) ")"))
     (println "  every certificate signed:" signed-certs?)
     (println "  forged votes accepted  :" forged-votes "(of 36 sent)")
     (println "  forged certificates    :" forged-certs)
@@ -333,6 +374,7 @@
     (cond
       (not progressed?) (do (println "NETWORK: FAIL — nothing was committed") 1)
       (not agree?) (do (println "NETWORK: FAIL — replicas committed different blocks") 1)
+      (not roots-agree?) (do (println "NETWORK: FAIL — same blocks, different state") 1)
       (pos? forged-votes) (do (println "NETWORK: FAIL — a forged vote was counted") 1)
       (pos? forged-certs) (do (println "NETWORK: FAIL — a forged certificate formed") 1)
       (pos? forged-nvs) (do (println "NETWORK: FAIL — a forged new-view was counted") 1)

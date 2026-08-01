@@ -9,6 +9,7 @@
             [engi.replica :as r]
             [engi.attest :as att]
             [engi.consensus :as c]
+            [clojure.string]
             [engi.stake :as stake]
             [engi.sync :as sync]))
 
@@ -500,3 +501,72 @@
       (is (stake/verify-equivocation-evidence ev vote-verifier))
       (is (= "w2" (:engi.evidence/witness ev)))
       (is (= 1 (:engi.evidence/height ev))))))
+
+;; ── committed blocks execute ────────────────────────────────────────────────
+
+(def counting-machine
+  "Order-sensitive on purpose: a machine whose result did not depend on the
+  order would make agreement on the order untestable, which is the only thing
+  consensus produces."
+  {:state []
+   :apply-fn (fn [st b] (conj st (:engi.block/height b)))
+   :root-fn (fn [st] (str (count st) ":" (clojure.string/join "," st)))})
+
+(defn- machine-replica [w]
+  (r/replica {:witness w :witnesses witnesses :quorum (c/quorum-size 4)
+              :hash-fn hash-fn :machine counting-machine}))
+
+(deftest a-replica-with-no-machine-has-no-root
+  (testing "nil rather than a constant: a replica that orders blocks and
+            executes nothing has no state to root, and a plausible-looking
+            zero would make every such replica agree with every other for the
+            wrong reason"
+    (is (nil? (r/state-root (get (net) :w1))))))
+
+(deftest committed-blocks-are-applied-in-order-exactly-once
+  (let [leader (c/leader-for witnesses 1)
+        rs (into {} (for [w witnesses] [w (machine-replica w)]))
+        [s0 out] (r/start (get rs leader) 1000)
+        rs (assoc rs leader s0)
+        [rs _ _] (deliver-all rs (mapv #(assoc % :from leader) out) 1000 4000)
+        rs (reduce (fn [rs t]
+                     (let [acc (reduce (fn [acc w]
+                                         (let [[s' o] (r/on-tick (get (:rs acc) w) t)]
+                                           (-> acc (update :rs assoc w s')
+                                               (update :ob into (map #(assoc % :from w) o)))))
+                                       {:rs rs :ob []} (sort (keys rs)))
+                           [rs' _ _] (deliver-all (:rs acc) (vec (:ob acc)) t 4000)]
+                       rs'))
+                   rs (range 2000 2600 100))]
+    (doseq [[w s] rs]
+      (let [applied (:machine-state s)]
+        (is (seq applied) (str w " committed blocks and applied none"))
+        (is (= applied (sort applied)) (str w " applied out of order"))
+        (is (= (count applied) (count (distinct applied)))
+            (str w " applied a block twice"))
+        (is (= (mapv :engi.block/height (:committed s)) applied)
+            (str w " applied something other than what it committed"))))))
+
+(deftest uncommitted-blocks-are-not-applied
+  (testing "applying a block that is merely adopted would be applying one that
+            can still be replaced, and undoing it afterwards is what the
+            3-chain rule exists to make unnecessary"
+    (let [leader (c/leader-for witnesses 1)
+          [_ out] (r/start (machine-replica leader) 1000)
+          proposal (:msg (first out))
+          [s' _] (r/on-message (machine-replica :w2) proposal 1001)]
+      (is (= 1 (r/height s')) "adopted")
+      (is (empty? (:machine-state s')) "and executed nothing"))))
+
+(deftest the-same-blocks-give-the-same-root
+  (testing "two replicas that committed the same blocks and derived different
+            roots have found a determinism bug — which is the failure the root
+            exists to surface"
+    (let [blocks [{:engi.block/height 1} {:engi.block/height 2}]
+          f (:apply-fn counting-machine)
+          root (:root-fn counting-machine)]
+      (is (= (root (reduce f (:state counting-machine) blocks))
+             (root (reduce f (:state counting-machine) blocks))))
+      (is (not= (root (reduce f (:state counting-machine) blocks))
+                (root (reduce f (:state counting-machine) (reverse blocks))))
+          "and a machine insensitive to order would make this test vacuous"))))
