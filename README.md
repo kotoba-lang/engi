@@ -530,6 +530,28 @@ built their certificates by hand, with a view, and never called the
 constructor. A JVM suite is not evidence about ClojureScript, and a test that
 constructs its own inputs is not evidence about the code that constructs them.
 
-**Not here yet:** p2p transport and signature aggregation. The pacemaker
-decides what to do and sync decides what may be believed; nothing carries the
-messages.
+## The wire: `engi.wire`
+
+The pacemaker decides what to do and sync decides what may be believed;
+neither could say anything, because consensus messages had no encoding.
+
+Two rules it exists to enforce:
+
+- **Decoding is total.** A peer may be Byzantine, broken, or a different
+  version. `decode` returns a message or a reason and never throws — a codec
+  that throws hands every peer a way to kill the replica by sending nonsense,
+  which is cheaper than anything the consensus rules defend against.
+- **The encoded form is JSON-shaped, and that is checked.** `json-safe?`
+  asserts it structurally, without a JSON library per runtime. A keyword that
+  slips through survives an in-memory round trip and only becomes a string
+  once a real transport serialises it, so the codec's own tests pass and the
+  first real peer sees something else.
+
+That second check earned itself immediately. `(str :w1)` is `":w1"`, so a
+keyword witness came back from the wire as a **different identifier** than it
+left as — and `engi.consensus/qc` counts distinct witnesses, so a certificate
+assembled from wire messages and one assembled locally would have disagreed
+about who signed it.
+
+**Not here yet:** the WebSocket driver and signature aggregation. The messages
+are defined; nothing carries them.

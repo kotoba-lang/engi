@@ -12,7 +12,8 @@
   Both must print the same digest."
   (:require [engi.consensus :as c]
             [engi.pacemaker :as pm]
-            [engi.sync :as sync]))
+            [engi.sync :as sync]
+            [engi.wire :as w]))
 
 (defn- h [b] (str "H" (:engi.block/height b) "/" (:engi.block/proposer b)))
 
@@ -41,13 +42,18 @@
         entered (pm/on-timeout-certificate st tc 0 pm/default-params)
         seg-ok (sync/validate-segment h 3 (nth chain 3) (subvec chain 4)
                                       sync/default-params)
+        ;; the wire, through an actual encode/decode, so parity covers it too
+        wire-msg {:type :new-view :witness :w1 :view 9 :high-qc real-qc}
+        [back _] (w/decode (w/encode wire-msg))
         digest (str "commits=" (count commits)
                     ";locked=" (pm/qc-view (:locked-qc st))
                     ";tcview=" (:engi.tc/view tc)
                     ";entered=" (:view entered)
                     ";timeouts=" (mapv #(pm/timeout-for % pm/default-params) (range 4))
                     ";seg=" (pr-str seg-ok)
-                    ";req=" (pr-str (sync/request 0 999999 sync/default-params)))]
+                    ";req=" (pr-str (sync/request 0 999999 sync/default-params))
+                    ";wire=" (pr-str (sort (:engi.qc/witnesses (:high-qc back))))
+                    ";jsonsafe=" (w/json-safe? (w/encode wire-msg)))]
     (println "  commits    " (count commits))
     (println "  locked view" (pm/qc-view (:locked-qc st)))
     (println "  entered    " (:view entered))
