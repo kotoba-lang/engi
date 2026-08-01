@@ -490,5 +490,27 @@ Everything is a pure function of data — no clock, no sockets, no timers.
 `now` is passed in, which is what lets a whole n-replica view change, including
 a partition and its healing, be simulated as a value in a test.
 
-**Not here yet:** p2p transport, signature aggregation, catch-up sync of
-missing blocks. The pacemaker decides what to do; nothing carries the messages.
+## Catch-up: `engi.sync`
+
+The pacemaker lets a lagging replica jump forward a view at a time on a
+timeout certificate. It does not give it the BLOCKS it missed, and a replica
+without them cannot check that a proposal extends anything, so it cannot
+safely vote.
+
+Sync is the one path where a replica takes a sequence of blocks from a
+stranger and adds it to what it believes. If that path is loose, none of the
+safety work upstream matters — an attacker does not need to break the commit
+rule if it can hand you a different past. So a segment is accepted only when
+it **attaches** to a block already held, heights are **contiguous**, every
+block is certified for **its own parent** (the same `direct-extends?` the
+commit rule uses, so sync cannot accept a chain the commit rule would reject),
+every certificate carries a quorum of **distinct** witnesses, and the segment
+is **bounded**.
+
+A segment failing any of those is rejected **whole**. Adopting the valid
+prefix of a bad one would let a peer choose where the replica's history ends
+by appending garbage to a good answer.
+
+**Not here yet:** p2p transport and signature aggregation. The pacemaker
+decides what to do and sync decides what may be believed; nothing carries the
+messages.
