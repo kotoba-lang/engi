@@ -553,5 +553,40 @@ left as — and `engi.consensus/qc` counts distinct witnesses, so a certificate
 assembled from wire messages and one assembled locally would have disagreed
 about who signed it.
 
-**Not here yet:** the WebSocket driver and signature aggregation. The messages
-are defined; nothing carries them.
+## Peers: `engi.net` and `engi.net.ws`
+
+`engi.net` is the policy, as pure data: when to dial, what to queue, when to
+give up. It exists separately because policy has failure modes worth testing
+and a socket does not. Three of them, each one a thing a naive peer loop gets
+wrong:
+
+- **Reconnect backs off**, and stops growing. A tight retry loop spends CPU on
+  a dead host; an unbounded backoff makes recovery proportional to downtime.
+- **The outbound queue is bounded and drops the OLDEST.** Consensus is a
+  broadcast protocol, so an unbounded queue for an undetected-dead peer is
+  every proposal and every vote until the process dies of memory — with no
+  invalid data anywhere. Oldest-first because a stale vote is worthless.
+- **Malformed messages are counted, and decay.** A peer sending garbage is
+  broken or hostile; a peer that glitched once during a deploy is neither. A
+  RUN of good messages is required to clear a strike, so alternating garbage
+  and greetings does not keep a peer alive forever.
+
+`engi.net.ws` is the driver, and deliberately decides nothing. It takes
+`WebSocket` from the global rather than requiring a package, which is what
+keeps it loadable in Node, a browser and a Worker alike — requiring `ws` would
+break two of the three and defeat the reason WebSocket was chosen.
+
+Verified over a real socket, not a fake (`script/check-ws.cljs`): a `ws`
+server on localhost, the driver as client, a `new-view` carrying a real
+certificate across, an echoed vote decoded on return, and a deliberate piece
+of garbage producing exactly one strike with the session still open.
+
+```
+live peers        : [:srv]
+server received   : new-view, witnesses ["w1" "w2" "w3"]
+client received   : [[:srv :vote] [:srv :rejected :unknown-type]]
+strikes           : 1
+```
+
+**Not here yet:** signature aggregation, and a server side (this dials out;
+accepting inbound connections is the Worker's job and is not written).
