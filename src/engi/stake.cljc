@@ -253,8 +253,9 @@
   `direct-extends?`/`three-chain-commits` already consume — a drop-in
   replacement, not a parallel format) if the DISTINCT voting witnesses'
   stake meets `stake-quorum-met?`, else nil."
-  [votes bonds witnesses]
-  (when (seq votes)
+  ([votes bonds witnesses] (stake-qc votes bonds witnesses nil))
+  ([votes bonds witnesses view]
+   (when (seq votes)
     (let [{:keys [engi.vote/block-hash engi.vote/height]} (first votes)]
       (when-not (every? #(and (= block-hash (:engi.vote/block-hash %))
                                (= height (:engi.vote/height %)))
@@ -263,10 +264,16 @@
                          {:votes votes})))
       (let [distinct-witnesses (set (map :engi.vote/witness votes))]
         (when (stake-quorum-met? distinct-witnesses bonds witnesses)
-          {:engi.qc/block-hash block-hash
+          (cond-> {:engi.qc/block-hash block-hash
            :engi.qc/height height
            :engi.qc/witnesses distinct-witnesses
-           :engi.qc/stake (total-stake bonds distinct-witnesses)})))))
+           :engi.qc/stake (total-stake bonds distinct-witnesses)}
+          ;; The view, for the same reason engi.consensus/qc records it: the
+          ;; pacemaker orders certificates by view and locks on the later one,
+          ;; so a certificate without one can never become a lock. A stake
+          ;; certificate that could not lock would leave the stake-weighted
+          ;; path with the exact bug the head-count path already had.
+          view (assoc :engi.qc/view view))))))))
 
 ;; ── equivocation detection / verification ────────────────────────────────────
 

@@ -42,7 +42,8 @@
   browser that cannot re-verify a certificate is not a verifier. It decides
   what to ask for and what may be believed."
   (:require [engi.consensus :as c]
-            [engi.attest :as att]))
+            [engi.attest :as att]
+            [engi.quorum :as q]))
 
 (def default-params
   {;; the most blocks a peer may hand over at once
@@ -90,7 +91,7 @@
   history does not re-verify it — the same distinction `apply-block` draws in
   torihiki between live application and replay."
   [qc quorum chain-id verify-fn]
-  (and (>= (count (:engi.qc/witnesses qc #{})) quorum)
+  (and (q/met? quorum (:engi.qc/witnesses qc #{}))
        (or (nil? verify-fn)
            (nil? (att/verify-certificate qc chain-id quorum verify-fn)))))
 

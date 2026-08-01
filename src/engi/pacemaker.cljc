@@ -47,7 +47,8 @@
 
   No clock, no sockets, no timers. `now` is passed in. That is what lets an
   entire n-replica view change, including a partition and its healing, be
-  simulated as a value in a test.")
+  simulated as a value in a test."
+  (:require [engi.quorum :as q]))
 
 ;; ── view state ──────────────────────────────────────────────────────────────
 
@@ -141,6 +142,10 @@
   Byzantine replica that resends its own new-view must not be able to
   manufacture a view change alone.
 
+  `quorum` is anything `engi.quorum/->predicate` accepts: an integer for a
+  managed set, or a predicate — the stake-weighted one under permissionless
+  admission, where counting heads is what a Sybil defeats.
+
   Throws when the messages are not all for the same view — routing two views
   into one certificate is a caller bug, not a Byzantine case, and silently
   accepting it would produce a certificate that means nothing."
@@ -151,7 +156,7 @@
         (throw (ex-info "pacemaker: all new-view messages must share a view"
                         {:messages messages})))
       (let [distinct-witnesses (set (map :engi.nv/witness messages))]
-        (when (>= (count distinct-witnesses) quorum)
+        (when (q/met? quorum distinct-witnesses)
           {:engi.tc/view view
            :engi.tc/witnesses distinct-witnesses
            ;; the highest QC anyone reported — what the next leader must build

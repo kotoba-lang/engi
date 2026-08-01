@@ -609,6 +609,40 @@ client saw        : [[:hub :vote]]
 inbound strikes   : 1
 ```
 
+## Quorum is a predicate: `engi.quorum`
+
+ADR-2607993000 gave this system head-count quorum. ADR-2607994000 then made
+witness admission **permissionless** and said plainly why head-counting stops
+being safe there: a Sybil splits a small total bond across many identities and
+buys votes cheaply, so *"true economic safety must be stake-weighted"*.
+
+`engi.stake/stake-qc` implemented that. **Nothing else did.** The pacemaker
+counted heads, `engi.sync` counted heads, `engi.attest` counted heads — so the
+security model the ADR decided on lived in one function while the consensus
+path ran on the model it replaced.
+
+Two notions of quorum in one system is not a redundancy. It is a question
+about which one is in force, and the answer was the weaker one everywhere it
+mattered.
+
+Quorum is now a **predicate over the witnesses that voted**, passed in. Head
+count and stake-weighted both implement it; a third rule later is a third
+implementation rather than a third place to edit. A bare integer is accepted
+and means head count, which is right for a managed set and is exactly the
+wrong default under open admission — `head-count` says so in its own
+docstring rather than leaving the reader to find the ADR.
+
+Asserted directly, with forty dust identities against four real holders:
+
+```
+head count      : 40 identities holding 40 units total  -> quorum
+stake-weighted  : the same forty                        -> not a quorum
+```
+
+and the same pair of answers from the pacemaker's timeout certificate, from
+`engi.sync`, and from `engi.attest` — because they all ask the same predicate
+now.
+
 ## Signatures: `engi.attest`
 
 `engi.consensus/qc` counts DISTINCT WITNESSES, and its docstring says votes

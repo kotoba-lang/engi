@@ -36,7 +36,8 @@
   gives: without the chain id a testnet signature authorises a mainnet vote;
   without the view a signature from one view certifies another; without the
   witness a signature can be replayed as somebody else's."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [engi.quorum :as q]))
 
 (def reasons
   #{:unsigned :missing-signature :bad-signature :below-quorum})
@@ -103,7 +104,7 @@
         (cond
           (some #(nil? (get sigs %)) witnesses) :missing-signature
           (< (count verified) (count witnesses)) :bad-signature
-          (< (count verified) quorum) :below-quorum
+          (not (q/met? quorum (set verified))) :below-quorum
           :else nil)))))
 
 (defn pending-checks

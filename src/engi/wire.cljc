@@ -74,6 +74,9 @@
              "height" (:engi.qc/height qc)
              "witnesses" (vec (sort (map wire-id (:engi.qc/witnesses qc))))}
       (:engi.qc/view qc) (assoc "view" (:engi.qc/view qc))
+      ;; a stake-weighted certificate that arrives without its stake is a
+      ;; certificate the receiver must re-derive or refuse
+      (:engi.qc/stake qc) (assoc "stake" (:engi.qc/stake qc))
       ;; signatures travel with the certificate — a certificate that arrives
       ;; without them cannot be checked by the peer that receives it, which is
       ;; the whole reason engi.attest exists
@@ -100,6 +103,7 @@
                  :engi.qc/witnesses (set ws)
                  :engi.qc/vote-count (count (set ws))}
           (nat? (get m "view")) (assoc :engi.qc/view (get m "view"))
+          (nat? (get m "stake")) (assoc :engi.qc/stake (get m "stake"))
           (map? (get m "sigs")) (assoc :engi.qc/sigs (get m "sigs")))))))
 
 (defn- enc-block [b]
