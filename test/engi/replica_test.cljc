@@ -7,6 +7,7 @@
   run looks like."
   (:require [clojure.test :refer [deftest is testing]]
             [engi.replica :as r]
+            [engi.attest :as att]
             [engi.consensus :as c]))
 
 (def witnesses [:w1 :w2 :w3 :w4])
@@ -197,3 +198,88 @@
     (let [s (reduce (fn [s i] (r/submit s (str "cid-" i) 8))
                     (get (net) :w1) (range 100))]
       (is (= 8 (count (:pending s)))))))
+
+;; ── a vote nobody signed is a claim ─────────────────────────────────────────
+
+(def chain "engi-test-1")
+
+(defn- fake-sign
+  "A signature scheme where the secret is the witness's own name. Enough to
+  distinguish signed from forged, which is the property under test — the
+  socket harness uses real Ed25519."
+  [w]
+  (fn [payload] (str "sig(" w ")" (hash payload))))
+
+(defn- fake-verify [w payload sig]
+  (= sig ((fake-sign (name w)) payload)))
+
+(defn- checked-replica [w]
+  (r/replica {:witness w :witnesses witnesses :quorum (c/quorum-size 4)
+              :hash-fn hash-fn :chain-id chain
+              :sign-fn (fake-sign (name w)) :verify-fn fake-verify}))
+
+(defn- forge [victim block-hash]
+  {:type :vote :witness victim :block-hash block-hash :height 1 :view 0})
+
+(deftest without-verification-one-peer-manufactures-a-quorum
+  (testing "the hole this closes, asserted rather than described: a replica
+            assembles certificates out of the votes it receives, so an
+            unsigned vote lets one connected peer forge a quorum from
+            witnesses whose keys it does not hold"
+    (let [s (get (net) :w1)                       ; no verify-fn configured
+          bh "h:forged"
+          [s' _] (reduce (fn [[s _] v] (r/on-message s (forge v bh) 1000))
+                         [s []] [:w2 :w3 :w4])]
+      (is (some? (get-in s' [:qcs bh]))
+          "three forged votes and a certificate exists"))))
+
+(deftest with-verification-the-same-three-votes-do-nothing
+  (let [s (checked-replica :w1)
+        bh "h:forged"
+        [s' out] (reduce (fn [[s _] v] (r/on-message s (forge v bh) 1000))
+                         [s []] [:w2 :w3 :w4])]
+    (is (empty? (get-in s' [:votes bh])) "not one was counted")
+    (is (nil? (get-in s' [:qcs bh])))
+    (is (empty? out) "and nothing was said back — a reply tells a forger
+                      which of its guesses were closer")))
+
+(deftest a-signature-from-the-wrong-key-is-refused
+  (let [s (checked-replica :w1)
+        bh "h:forged"
+        ;; correctly formed, signed by somebody else
+        sig ((fake-sign "attacker") (att/vote-payload chain 0 1 bh "w2"))
+        [s' _] (r/on-message s (assoc (forge :w2 bh) :sig sig) 1000)]
+    (is (empty? (get-in s' [:votes bh])))))
+
+(deftest a-signature-for-another-chain-is-refused
+  (testing "domain separation — the reason chain-id is in the payload at all"
+    (let [s (checked-replica :w1)
+          bh "h:forged"
+          sig ((fake-sign "w2") (att/vote-payload "engi-othernet-9" 0 1 bh "w2"))
+          [s' _] (r/on-message s (assoc (forge :w2 bh) :sig sig) 1000)]
+      (is (empty? (get-in s' [:votes bh]))))))
+
+(deftest a-genuine-vote-is-counted
+  (testing "so the refusals above are about the signature and not about the
+            shape — a check that refuses everything proves nothing"
+    (let [s (checked-replica :w1)
+          bh "h:forged"
+          sig ((fake-sign "w2") (att/vote-payload chain 0 1 bh "w2"))
+          [s' _] (r/on-message s (assoc (forge :w2 bh) :sig sig) 1000)]
+      (is (= 1 (count (get-in s' [:votes bh])))))))
+
+(deftest certificates-carry-the-signatures-they-were-built-from
+  (testing "a certificate assembled from verified votes must be re-checkable
+            by somebody who did not see them"
+    (let [s (checked-replica :w1)
+          bh "h:forged"
+          [s' _] (reduce (fn [[s _] v]
+                           (let [sig ((fake-sign (name v))
+                                      (att/vote-payload chain 0 1 bh (name v)))]
+                             (r/on-message s (assoc (forge v bh) :sig sig) 1000)))
+                         [s []] [:w2 :w3 :w4])
+          cert (get-in s' [:qcs bh])]
+      (is (some? cert))
+      (is (att/signed? cert))
+      (is (nil? (att/verify-certificate cert chain (c/quorum-size 4) fake-verify))
+          "and it verifies"))))

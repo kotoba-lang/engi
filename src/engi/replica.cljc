@@ -13,6 +13,22 @@
   terminal whose client was compiled, deployed, and never referenced from the
   page: every part green, the whole thing never executed.
 
+  ## A vote nobody signed is a claim, not a vote
+
+  A replica assembles certificates out of the votes it receives. So an
+  unsigned vote is not a small gap: one connected peer sends
+  `{witness: w2, ...}`, `{witness: w3, ...}`, `{witness: w4, ...}` and has
+  manufactured a quorum by itself, without holding a single key. Certificates
+  carried signatures from the start; the votes they are built out of did not,
+  which made the certificate signatures decorative — an attacker fabricates
+  the votes and lets the honest replica sign the certificate for it.
+
+  `verify-fn` is injected, like every other cryptographic seam here, and when
+  one is configured a vote without a verifying signature is dropped. When none
+  is configured nothing is checked, which is right for replaying a history
+  this replica already agreed to and wrong for anything else — so `replica`
+  says so rather than defaulting quietly.
+
   ## Every witness id is normalised to its wire form
 
   `engi.wire` sends the keyword :w1 as the string w1, so a replica that
@@ -64,6 +80,7 @@
   (:require [engi.consensus :as c]
             [engi.pacemaker :as pm]
             [engi.quorum :as q]
+            [engi.attest :as att]
             [engi.wire :as wire]))
 
 (def default-params
@@ -80,7 +97,8 @@
   head count and is right for a managed set; under permissionless admission
   pass `engi.quorum/stake-weighted`, because head-counting is what a Sybil
   defeats."
-  [{:keys [witness witnesses quorum genesis hash-fn params]}]
+  [{:keys [witness witnesses quorum genesis hash-fn params
+           chain-id sign-fn verify-fn]}]
   (let [params (merge default-params params)
         witness (wire/wire-id witness)
         witnesses (mapv wire/wire-id witnesses)
@@ -92,6 +110,15 @@
      :quorum (or quorum (count witnesses))
      :hash-fn hash-fn
      :params params
+     ;; The signing seam. `chain-id` is domain separation: a vote signed on a
+     ;; testnet must not authorise the same block on another chain, and the
+     ;; only thing that stops it is the signature covering which chain it was
+     ;; for — the same reason `torihiki.auth` puts it in its payload.
+     :chain-id (or chain-id "engi-devnet-1")
+     :sign-fn sign-fn
+     ;; nil means "verify nothing", which is correct only for replaying an
+     ;; already-agreed history. Live, it means every vote is believed.
+     :verify-fn verify-fn
      :pm (pm/initial witness)
      :chain [g]
      :by-hash {(hash-fn g) g}
@@ -241,16 +268,29 @@
   actually knows, and with a four-witness set that is the difference between
   reaching quorum and never reaching it — a transport detail silently setting
   the quorum threshold."
-  [state {:keys [witness block-hash height view]} now]
+  [state {:keys [witness block-hash height view sig]} now]
   (let [witness (wire/wire-id witness)
-        state (update-in state [:votes block-hash] (fnil assoc {}) witness
-                         (assoc (c/make-vote witness block-hash height)
-                                :engi.vote/view view))
+        verify (:verify-fn state)
+        ok? (or (nil? verify)
+                (and sig
+                     (verify witness
+                             (att/vote-payload (:chain-id state) view height
+                                               block-hash witness)
+                             sig)))]
+   (if-not ok?
+    ;; Dropped, not counted and not answered. A replica that replied would be
+    ;; telling a forger which of its guesses were closer.
+    [state []]
+    (let [state (update-in state [:votes block-hash] (fnil assoc {}) witness
+                         (cond-> (assoc (c/make-vote witness block-hash height)
+                                        :engi.vote/view view)
+                           sig (assoc :engi.vote/sig sig)))
         votes (vals (get-in state [:votes block-hash]))
         view (apply max (map #(:engi.vote/view % 0) votes))]
     (if (and (q/met? (:quorum state) (set (map :engi.vote/witness votes)))
              (not (get-in state [:qcs block-hash])))
-      (let [cert (c/qc (vec votes) (count (:witnesses state)) view)]
+      (let [cert (some-> (c/qc (vec votes) (count (:witnesses state)) view)
+                         (att/certify votes))]
         (if cert
           (let [state (-> state
                           (assoc-in [:qcs block-hash] cert)
@@ -259,7 +299,7 @@
                           absorb-commits)]
             (propose state now))
           [state []]))
-      [state []])))
+      [state []])))))
 
 (defn- cast-vote
   "Vote for `block` at the current view: record it locally and emit it.
@@ -271,13 +311,13 @@
         view (:view (:pm state))
         bh (hf block)
         ht (:engi.block/height block)
-        msg {:type :vote :witness (:witness state) :block-hash bh
-             :height ht :view view}
-        [state' out] (fold-vote (update state :voted conj ht)
-                                {:witness (:witness state) :block-hash bh
-                                 :height ht :view view}
-                                now)]
-    [state' (into [{:to :all :msg msg}] out)]))
+        sig (when-let [f (:sign-fn state)]
+              (f (att/vote-payload (:chain-id state) view ht bh (:witness state))))
+        vote (cond-> {:witness (:witness state) :block-hash bh
+                      :height ht :view view}
+               sig (assoc :sig sig))
+        [state' out] (fold-vote (update state :voted conj ht) vote now)]
+    [state' (into [{:to :all :msg (assoc vote :type :vote)}] out)]))
 
 (defn- adopt-own
   "A proposer adopts and votes for its own block.

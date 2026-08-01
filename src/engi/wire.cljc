@@ -155,9 +155,15 @@
   [msg]
   (case (:type msg)
     :proposal {"t" "proposal" "block" (enc-block (:block msg))}
-    :vote {"t" "vote" "witness" (wire-id (:witness msg))
-           "block-hash" (:block-hash msg) "height" (:height msg)
-           "view" (:view msg)}
+    ;; A vote carries its signature. Without it a vote crossing the wire is an
+    ;; unauthenticated claim, and since a replica assembles certificates FROM
+    ;; wire votes, one connected peer could forge a vote from every other
+    ;; witness and manufacture a quorum alone. Certificates carried signatures
+    ;; from the start; the votes they are built out of did not.
+    :vote (cond-> {"t" "vote" "witness" (wire-id (:witness msg))
+                   "block-hash" (:block-hash msg) "height" (:height msg)
+                   "view" (:view msg)}
+            (:sig msg) (assoc "sig" (str (:sig msg))))
     :new-view {"t" "new-view" "witness" (wire-id (:witness msg))
                "view" (:view msg) "high-qc" (enc-qc (:high-qc msg))}
     :sync-request {"t" "sync-request" "from" (:from msg) "to" (:to msg)}
@@ -182,13 +188,19 @@
          [nil :bad-shape])
 
        "vote"
+       ;; The signature is optional HERE and refused by `engi.replica`. This
+       ;; namespace decides what a message is; whether an unsigned one may be
+       ;; believed is a consensus rule, and putting it here would mean a
+       ;; replica replaying its own already-checked history had to re-sign it.
        (if (and (str-ok? (get m "witness") limits)
                 (str-ok? (get m "block-hash") limits)
                 (nat? (get m "height"))
-                (nat? (get m "view")))
-         [{:type :vote :witness (get m "witness")
-           :block-hash (get m "block-hash") :height (get m "height")
-           :view (get m "view")} nil]
+                (nat? (get m "view"))
+                (or (nil? (get m "sig")) (str-ok? (get m "sig") limits)))
+         [(cond-> {:type :vote :witness (get m "witness")
+                   :block-hash (get m "block-hash") :height (get m "height")
+                   :view (get m "view")}
+            (get m "sig") (assoc :sig (get m "sig"))) nil]
          [nil :bad-shape])
 
        "new-view"

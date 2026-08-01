@@ -40,6 +40,44 @@ four replicas on ports 19301–19304 · quorum 3 of 4
   all replicas agree     : true
 ```
 
+### A vote nobody signed is a claim
+
+Certificates carried signatures from the start. **The votes they are built out
+of did not.** `engi.wire` encoded a vote as witness, block-hash, height and
+view, and dropped `:engi.vote/sig` entirely — so a replica assembling a
+certificate from wire votes was assembling it from unauthenticated claims.
+
+One connected peer sends `{witness: w2}`, `{witness: w3}`, `{witness: w4}` and
+has manufactured a quorum without holding a single key. The certificate
+signatures were decorative: the attacker fabricates the votes and lets an
+honest replica sign the certificate for it.
+
+Votes now carry their signature, `engi.replica` verifies it against an
+injected `verify-fn`, and a vote that does not verify is dropped without a
+reply — answering would tell a forger which of its guesses were closer.
+
+The harness has a forger. It dials every replica and sends votes claiming to
+be w2, w3 and w4 for a block nobody proposed, in three flavours that fail for
+three different reasons: unsigned, signed with the wrong key, and correctly
+signed **for a different chain** — which is the whole reason `chain-id` is in
+the payload.
+
+```
+  common committed prefix: 99 blocks
+  all replicas agree     : true
+  every certificate signed: true
+  forged votes accepted  : 0 (of 36 sent)
+  forged certificates    : 0
+
+NETWORK: pass — consensus ran over real sockets, and every forgery was refused
+```
+
+`without-verification-one-peer-manufactures-a-quorum` asserts the hole was
+real rather than describing it: with no `verify-fn`, three forged votes
+produce a certificate. `verify-fn` nil still means "check nothing", which is
+correct for replaying a history this replica already agreed to and wrong for
+anything else, so `replica` says which rather than defaulting quietly.
+
 ### Three bugs, and the deterministic test could see none of them
 
 Each was found by running, and each was invisible to a map-for-a-transport

@@ -171,3 +171,27 @@
       (is (= 3 (count (:engi.qc/witnesses (:high-qc m)))))
       (is (= #{"w1" "w2" "w3"} (:engi.qc/witnesses (:high-qc m)))
           "the same three, not three colon-prefixed strangers"))))
+
+;; ── a vote's signature survives, because a vote without one is a claim ──────
+
+(deftest a-vote-carries-its-signature
+  (testing "a replica assembles certificates from wire votes, so an
+            unauthenticated vote lets one peer forge a quorum by itself"
+    (let [[m _] (w/decode (w/encode {:type :vote :witness :w2 :block-hash "H5"
+                                     :height 5 :view 7 :sig "c2ln"}))]
+      (is (= "c2ln" (:sig m)))
+      (is (= "w2" (:witness m))))))
+
+(deftest an-unsigned-vote-still-decodes-and-is-refused-elsewhere
+  (testing "this ns says what a message IS; whether an unsigned one may be
+            believed is a consensus rule, and a replica replaying its own
+            checked history must not have to re-sign it"
+    (let [[m r] (w/decode (w/encode {:type :vote :witness :w2 :block-hash "H5"
+                                     :height 5 :view 7}))]
+      (is (some? m))
+      (is (nil? r))
+      (is (nil? (:sig m))))))
+
+(deftest a-signature-that-is-not-a-string-is-refused
+  (is (= :bad-shape (second (w/decode {"t" "vote" "witness" "w" "block-hash" "h"
+                                       "height" 1 "view" 1 "sig" 42})))))
