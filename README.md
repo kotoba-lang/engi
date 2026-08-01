@@ -511,6 +511,25 @@ A segment failing any of those is rejected **whole**. Adopting the valid
 prefix of a bad one would let a peer choose where the replica's history ends
 by appending garbage to a good answer.
 
+## Both runtimes, checked
+
+The consensus layer is `.cljc` and runs on the JVM and on ClojureScript. That
+is verified, not asserted:
+
+```bash
+clojure -M:parity
+nbb --classpath src -e "(require '[engi.parity :as p]) (p/report)"
+# both must print the same digest
+```
+
+The check earns its place immediately. Running it for the first time found
+that `engi.consensus/qc` did not record the view it was formed in, so
+`engi.pacemaker/qc-view` returned 0 for every certificate the production path
+produced and **the lock never engaged**. Every pacemaker test passed: they
+built their certificates by hand, with a view, and never called the
+constructor. A JVM suite is not evidence about ClojureScript, and a test that
+constructs its own inputs is not evidence about the code that constructs them.
+
 **Not here yet:** p2p transport and signature aggregation. The pacemaker
 decides what to do and sync decides what may be believed; nothing carries the
 messages.

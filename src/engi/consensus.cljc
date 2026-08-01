@@ -89,8 +89,9 @@
   neutralized. Throws if the votes don't actually agree on block-hash/height
   (a caller bug, not a Byzantine-tolerance case — routing votes for
   different blocks into one `qc` call is a programming error)."
-  [votes n]
-  (when (seq votes)
+  ([votes n] (qc votes n nil))
+  ([votes n view]
+   (when (seq votes)
     (let [{:keys [engi.vote/block-hash engi.vote/height]} (first votes)]
       (when-not (every? #(and (= block-hash (:engi.vote/block-hash %))
                                (= height (:engi.vote/height %)))
@@ -99,10 +100,17 @@
                          {:votes votes})))
       (let [distinct-witnesses (set (map :engi.vote/witness votes))]
         (when (>= (count distinct-witnesses) (quorum-size n))
-          {:engi.qc/block-hash block-hash
-           :engi.qc/height height
-           :engi.qc/witnesses distinct-witnesses
-           :engi.qc/vote-count (count distinct-witnesses)})))))
+          (cond-> {:engi.qc/block-hash block-hash
+                   :engi.qc/height height
+                   :engi.qc/witnesses distinct-witnesses
+                   :engi.qc/vote-count (count distinct-witnesses)}
+            ;; The view a certificate was formed in. `engi.pacemaker` orders
+            ;; QCs by it and locks on the later one, so a certificate without
+            ;; it can never become a lock — which is exactly what happened
+            ;; while this arity did not exist: every hand-built QC in the
+            ;; pacemaker tests carried a view, every QC this constructor
+            ;; produced did not, and the lock silently never engaged.
+            view (assoc :engi.qc/view view))))))))
 
 ;; ── chained 3-chain commit rule ───────────────────────────────────────────────
 

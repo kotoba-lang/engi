@@ -165,9 +165,13 @@
   LOCK only when the QC is genuinely later — a lock that could move backwards
   is not a lock."
   [state qc]
-  (let [high (higher-qc (:high-qc state) qc)]
+  (let [high (higher-qc (:high-qc state) qc)
+        locked (:locked-qc state)]
     (cond-> (assoc state :high-qc high)
-      (> (qc-view qc) (qc-view (:locked-qc state)))
+      ;; `nil` lock is distinct from a lock at view 0: view 0 is a legitimate
+      ;; first view, and requiring strictly-greater-than against a nil lock
+      ;; treated as 0 meant the very first certificate could never lock.
+      (or (nil? locked) (> (qc-view qc) (qc-view locked)))
       (assoc :locked-qc qc))))
 
 (defn on-timeout

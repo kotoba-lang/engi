@@ -165,3 +165,34 @@
         (testing "so a new leader proposing a branch that drops it is refused"
           (let [rogue (block (qc 4 4 "competing-branch"))]
             (is (every? #(not (pm/safe-to-vote? % rogue extends-nothing)) entered))))))))
+
+;; ── the certificates the real constructor makes ─────────────────────────────
+;;
+;; Every QC above is hand-built and carries a view. `engi.consensus/qc` did
+;; not set one, so `qc-view` returned 0 for every certificate the production
+;; path produced and the lock never engaged. The tests all passed: they were
+;; exercising a shape the code did not make.
+
+(deftest a-real-certificate-can-lock-a-replica
+  (let [votes (mapv #(c/make-vote % "block-hash" 4) [:w1 :w2 :w3])
+        real-qc (c/qc votes 4 7)]
+    (is (some? real-qc))
+    (is (= 7 (pm/qc-view real-qc)) "the constructor records the view it was formed in")
+    (let [s (pm/on-qc (pm/initial :w1) real-qc)]
+      (is (some? (:locked-qc s)) "a certificate from the real path must be able to lock")
+      (is (= 7 (pm/qc-view (:locked-qc s)))))))
+
+(deftest the-first-certificate-locks-even-at-view-zero
+  (testing "nil lock is not the same as a lock at view 0"
+    (let [votes (mapv #(c/make-vote % "b0" 0) [:w1 :w2 :w3])
+          s (pm/on-qc (pm/initial :w1) (c/qc votes 4 0))]
+      (is (some? (:locked-qc s))
+          "requiring strictly-greater against a nil lock read as 0 locked nothing"))))
+
+(deftest a-view-less-certificate-still-works-but-orders-lowest
+  (testing "the old two-arity form stays valid — it just cannot outrank a viewed one"
+    (let [votes (mapv #(c/make-vote % "b" 1) [:w1 :w2 :w3])
+          old (c/qc votes 4)
+          new (c/qc votes 4 3)]
+      (is (nil? (:engi.qc/view old)))
+      (is (= new (pm/higher-qc old new))))))
