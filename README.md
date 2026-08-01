@@ -110,6 +110,43 @@ without it.
   locks hijacked         : 0
 ```
 
+### The one crime that proves itself
+
+Two votes from one witness at one height for different blocks, both signed and
+both verifying, cannot both be honest. **Nothing else in this protocol has
+that property.** A slow replica and a censoring one look identical; a leader
+that skips its turn looks like a leader that crashed. This one is decidable
+from the two messages alone, by anybody, without trusting whoever reported it
+— which is what makes it the only thing worth slashing for.
+
+Refusing the second vote is not the interesting part: quorum already stops a
+Byzantine minority from certifying two blocks at one height. **Keeping the
+proof is.** An equivocator that is merely ignored pays nothing and does it
+again next height, forever, for free.
+
+The harness now has a Byzantine validator *inside the set* — w4, holding a
+real key, signing a second vote for a block nobody proposed at every height it
+votes at. That is a different creature from the forger, which is a stranger:
+the difference between "a stranger cannot lie to us" and "a validator cannot
+lie to us".
+
+```
+  byzantine validator    : w4 (equivocates at every height)
+    w1 holds proof against  ["w4"] — 220 verified
+    w2 holds proof against  ["w4"] — 220 verified
+    w3 holds proof against  ["w4"] — 220 verified
+  certificates for the block it invented: 0
+
+  common committed prefix: 109 blocks
+  all replicas agree     : true
+```
+
+Evidence is in the shape `engi.stake` consumes, so `slash` and
+`verify-equivocation-evidence` take it unchanged, and it is re-verified rather
+than trusted from detection. The first vote still counts — discarding the
+honest half would let an equivocator retract a vote it regretted by
+contradicting itself.
+
 ### Catching up went through nothing
 
 `engi.sync` decides what a lagging replica may believe from a stranger: that a

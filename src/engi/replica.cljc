@@ -13,6 +13,25 @@
   terminal whose client was compiled, deployed, and never referenced from the
   page: every part green, the whole thing never executed.
 
+  ## Equivocation is recorded, because it is the one crime that proves itself
+
+  Two votes from one witness at one height for different blocks, both signed
+  and both verifying, cannot both be honest. Nothing else in this protocol has
+  that property: a slow replica and a censoring one look identical, a leader
+  that skips its turn looks like a leader that crashed. This one is decidable
+  from the two messages alone, by anybody, without trusting whoever reported
+  it — which is exactly what makes it the only thing worth slashing for.
+
+  A replica keeps the first signed vote it accepted per `[witness height]`. A
+  second one for a different block is refused AND kept as evidence, in the
+  shape `engi.stake/detect-equivocation` produces, so `slash` and
+  `verify-equivocation-evidence` take it unchanged.
+
+  Refusing it is not the interesting part — quorum already stops a Byzantine
+  minority from certifying two blocks at one height. Keeping the proof is. An
+  equivocating validator that is merely ignored pays nothing and can do it
+  again next height, forever, for free.
+
   ## Catching up goes through `engi.sync`, which it did not
 
   `engi.sync` exists to decide what a lagging replica may believe from a
@@ -108,6 +127,7 @@
             [engi.pacemaker :as pm]
             [engi.quorum :as q]
             [engi.attest :as att]
+            [engi.stake :as stake]
             [engi.sync :as sync]
             [engi.wire :as wire]))
 
@@ -156,6 +176,10 @@
      ;; the heights this replica has voted at — never two votes at one height
      :voted #{}
      :qcs {}
+     ;; first accepted vote per [witness height], and the proofs of anyone who
+     ;; sent a second one for a different block
+     :first-vote {}
+     :equivocations []
      :committed []
      :pending []
      :last-proposed-at 0}))
@@ -309,10 +333,24 @@
     ;; Dropped, not counted and not answered. A replica that replied would be
     ;; telling a forger which of its guesses were closer.
     [state []]
-    (let [state (update-in state [:votes block-hash] (fnil assoc {}) witness
-                         (cond-> (assoc (c/make-vote witness block-hash height)
-                                        :engi.vote/view view)
-                           sig (assoc :engi.vote/sig sig)))
+    (let [vote (cond-> (assoc (c/make-vote witness block-hash height)
+                              :engi.vote/view view)
+                 sig (assoc :engi.vote/sig sig))
+          prior (get-in state [:first-vote [witness height]])]
+     (if (and prior (not= (:engi.vote/block-hash prior) block-hash))
+       ;; Both signed, both verifying, both from this witness at this height,
+       ;; for different blocks. Refused, and kept: an equivocator that is
+       ;; merely ignored pays nothing and can do it again next height.
+       [(update state :equivocations conj
+                {:engi.evidence/witness witness
+                 :engi.evidence/height height
+                 :engi.evidence/vote-a prior
+                 :engi.evidence/vote-b vote})
+        []]
+    (let [state (assoc-in state [:first-vote [witness height]]
+                          (or prior vote))
+          state (update-in state [:votes block-hash] (fnil assoc {}) witness
+                         vote)
         votes (vals (get-in state [:votes block-hash]))
         view (apply max (map #(:engi.vote/view % 0) votes))]
     (if (and (q/met? (:quorum state) (set (map :engi.vote/witness votes)))
@@ -327,7 +365,7 @@
                           absorb-commits)]
             (propose state now))
           [state []]))
-      [state []])))))
+      [state []])))))))
 
 (defn- cast-vote
   "Vote for `block` at the current view: record it locally and emit it.
@@ -487,6 +525,23 @@
    (if (>= (count (:pending state)) cap)
      state
      (update state :pending conj cid))))
+
+(defn equivocators
+  "Every witness this replica holds a proof against.
+
+  The proofs are self-contained — `engi.stake/verify-equivocation-evidence`
+  re-checks the pair rather than trusting that detection ran — so this can be
+  handed to somebody who did not see the votes arrive."
+  [state]
+  (into (sorted-set) (map :engi.evidence/witness (:equivocations state))))
+
+(defn verified-equivocations
+  "The proofs that hold up under `verify-sig-fn`. Kept separate from
+  `:equivocations` so a caller slashes on what it re-verified, not on what
+  this replica happened to record."
+  [state verify-sig-fn]
+  (vec (filter #(stake/verify-equivocation-evidence % verify-sig-fn)
+               (:equivocations state))))
 
 (defn committed-height [state]
   (if-let [b (peek (:committed state))] (:engi.block/height b) -1))

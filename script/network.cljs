@@ -11,6 +11,14 @@
 ;; the consensus seam did not have to become async) and verified against a
 ;; witness -> public key map.
 ;;
+;; A BYZANTINE VALIDATOR is inside the set: w4 holds a real key and, at every
+;; height it votes at, signs a SECOND vote for a block that does not exist.
+;; Both signatures verify. Quorum already stops it from certifying two blocks
+;; at one height — with n=4 the threshold is 3 and it is one witness — so the
+;; interesting question is not whether safety holds but whether the crime is
+;; recorded. An equivocator that is merely ignored pays nothing and does it
+;; again next height, forever, for free.
+;;
 ;; A FORGER dials every replica and sends votes claiming to be w2, w3 and w4
 ;; for a block it made up. That is the attack an unsigned vote allows, and it
 ;; was available until this commit: a replica assembles certificates out of
@@ -78,6 +86,30 @@
 
 ;; ── one replica, wrapped in sockets ─────────────────────────────────────────
 
+(def byzantine
+  "The witness that equivocates. Inside the validator set, with a real key —
+  which the forger is not, and which is the whole difference between 'a
+  stranger cannot lie to us' and 'a validator cannot lie to us'."
+  "w4")
+
+(def equivocation-hash
+  "The block w4 casts its second vote for. Nobody proposed it."
+  "0000equivocation0000equivocation0000equivocation0000equivocation")
+
+(defn vote-verifier
+  "`engi.stake`'s `verify-sig-fn` shape: one vote in, boolean out.
+
+  Evidence is re-verified through this rather than trusted from detection, so
+  a proof is something a third party can check without having watched the
+  votes arrive — which is the property that makes equivocation worth slashing
+  for in the first place."
+  [v]
+  (verify-fn (:engi.vote/witness v)
+             (att/vote-payload chain-id (:engi.vote/view v 0)
+                               (:engi.vote/height v) (:engi.vote/block-hash v)
+                               (:engi.vote/witness v))
+             (:engi.vote/sig v)))
+
 (defn make-node [w]
   (let [state (atom (r/replica {:witness w
                                 :witnesses witnesses
@@ -98,11 +130,27 @@
                 (when-let [n @out-node] ((:broadcast! n) msg))
                 ;; and to everyone who dialled us
                 (doseq [[_ s] @registry] (when (:send! s) ((:send! s) msg)))))
+            (equivocate! [outbox]
+              ;; For every vote this replica casts, cast a second one at the
+              ;; same height for a block that does not exist. Signed properly:
+              ;; the point is a validator misbehaving, not a forgery.
+              (when (= (wire/wire-id w) byzantine)
+                (doseq [{:keys [msg]} outbox
+                        :when (= :vote (:type msg))]
+                  (let [twin (assoc msg :block-hash equivocation-hash
+                                    :sig ((sign-as w)
+                                          (att/vote-payload
+                                           chain-id (:view msg) (:height msg)
+                                           equivocation-hash (wire/wire-id w))))]
+                    (when-let [n @out-node] ((:broadcast! n) twin))
+                    (doseq [[_ s] @registry]
+                      (when (:send! s) ((:send! s) twin)))))))
             (feed! [msg]
               (swap! recv inc)
               (let [[s' out] (r/on-message @state msg (now))]
                 (reset! state s')
-                (ship! out)))]
+                (ship! out)
+                (equivocate! out)))]
       (let [wss (ws/WebSocketServer. #js {:port (port-of w)})
             n (atom 0)]
         (.on wss "connection"
@@ -131,11 +179,13 @@
                   (when-let [n @out-node] ((:tick! n)))
                   (let [[s' out] (r/on-tick @state (now))]
                     (reset! state s')
-                    (ship! out)))
+                    (ship! out)
+                    (equivocate! out)))
          :start! (fn []
                    (let [[s' out] (r/start @state (now))]
                      (reset! state s')
-                     (ship! out)))
+                     (ship! out)
+                     (equivocate! out)))
          :close! (fn []
                    (when-let [n @out-node] ((:close-all! n)))
                    (.close wss))}))))
@@ -244,6 +294,16 @@
         forged-certs (count (filter #(get-in @(:state %) [:qcs forged-hash]) nodes))
         forged-nvs (apply + (map #(count (get-in @(:state %) [:new-views 9999] {}))
                                  nodes))
+        honest (remove #(= byzantine (wire/wire-id (:witness %))) nodes)
+        caught (map (fn [n]
+                      [(wire/wire-id (:witness n))
+                       (r/equivocators @(:state n))
+                       (count (r/verified-equivocations @(:state n) vote-verifier))])
+                    honest)
+        all-caught? (every? (fn [[_ who n]] (and (contains? who byzantine) (pos? n)))
+                            caught)
+        equiv-certs (count (filter #(get-in @(:state %) [:qcs equivocation-hash])
+                                   nodes))
         forged-history (count (filter (fn [n]
                                         (some #(= ["forged"] (:engi.block/proposals %))
                                               (:chain @(:state n))))
@@ -265,6 +325,11 @@
     (println "  locks hijacked         :" hijacked)
     (println "  forged histories taken :" forged-history)
     (println "")
+    (println "  byzantine validator    :" byzantine "(equivocates at every height)")
+    (doseq [[w who n] caught]
+      (println (str "    " w " holds proof against ") (vec who) "—" n "verified"))
+    (println "  certificates for the block it invented:" equiv-certs)
+    (println "")
     (cond
       (not progressed?) (do (println "NETWORK: FAIL — nothing was committed") 1)
       (not agree?) (do (println "NETWORK: FAIL — replicas committed different blocks") 1)
@@ -274,8 +339,11 @@
       (pos? hijacked) (do (println "NETWORK: FAIL — a replica locked onto a block nobody proposed") 1)
       (pos? forged-history) (do (println "NETWORK: FAIL — a forged segment was adopted as history") 1)
       (not signed-certs?) (do (println "NETWORK: FAIL — a certificate carried no signatures") 1)
+      (pos? equiv-certs) (do (println "NETWORK: FAIL — the equivocator got a certificate") 1)
+      (not all-caught?) (do (println "NETWORK: FAIL — an honest replica holds no proof against the equivocator") 1)
       :else (do (println "NETWORK: pass — consensus ran over real sockets,"
-                         "and every forgery was refused") 0))))
+                         "every forgery was refused,"
+                         "and the equivocating validator was caught") 0))))
 
 (defn -main []
   (let [nodes (mapv make-node witnesses)]

@@ -9,6 +9,7 @@
             [engi.replica :as r]
             [engi.attest :as att]
             [engi.consensus :as c]
+            [engi.stake :as stake]
             [engi.sync :as sync]))
 
 (def witnesses [:w1 :w2 :w3 :w4])
@@ -418,3 +419,84 @@
           [_ out] (r/on-message s {:type :sync-request :from 0 :to 999999} 1000)]
       (is (= (:max-batch sync/default-params)
              (count (:blocks (:msg (first out)))))))))
+
+;; ── equivocation ────────────────────────────────────────────────────────────
+
+(defn- signed-vote [w bh height]
+  (let [wn (name w)]
+    {:type :vote :witness wn :block-hash bh :height height :view 0
+     :sig ((fake-sign wn) (att/vote-payload chain 0 height bh wn))}))
+
+(defn- vote-verifier [v]
+  (fake-verify (:engi.vote/witness v)
+               (att/vote-payload chain (:engi.vote/view v 0) (:engi.vote/height v)
+                                 (:engi.vote/block-hash v) (:engi.vote/witness v))
+               (:engi.vote/sig v)))
+
+(deftest two-signed-votes-at-one-height-are-a-proof
+  (testing "the one crime that proves itself: both verify, both are from this
+            witness at this height, and they name different blocks — nothing
+            else in the protocol is decidable from the messages alone"
+    (let [s (checked-replica :w1)
+          [s' _] (r/on-message s (signed-vote :w2 "h:a" 1) 1000)
+          [s'' _] (r/on-message s' (signed-vote :w2 "h:b" 1) 1001)]
+      (is (= #{"w2"} (r/equivocators s'')))
+      (is (= 1 (count (r/verified-equivocations s'' vote-verifier)))
+          "and the proof holds up when re-checked by somebody who did not
+           watch the votes arrive"))))
+
+(deftest the-second-vote-is-refused-and-the-first-still-counts
+  (testing "discarding the honest half would let an equivocator retract a
+            vote it regretted by contradicting itself"
+    (let [s (checked-replica :w1)
+          [s' _] (r/on-message s (signed-vote :w2 "h:a" 1) 1000)
+          [s'' _] (r/on-message s' (signed-vote :w2 "h:b" 1) 1001)]
+      (is (= 1 (count (get-in s'' [:votes "h:a"]))))
+      (is (empty? (get-in s'' [:votes "h:b"]))))))
+
+(deftest repeating-the-same-vote-is-not-equivocation
+  (testing "a resend is not a crime — it is what a retrying peer does"
+    (let [s (checked-replica :w1)
+          [s' _] (reduce (fn [[s _] _] (r/on-message s (signed-vote :w2 "h:a" 1) 1000))
+                         [s []] (range 5))]
+      (is (empty? (r/equivocators s')))
+      (is (= 1 (count (get-in s' [:votes "h:a"])))))))
+
+(deftest voting-at-different-heights-is-not-equivocation
+  (testing "otherwise every honest validator would be slashable by block two"
+    (let [s (checked-replica :w1)
+          [s' _] (reduce (fn [[s _] h]
+                           (r/on-message s (signed-vote :w2 (str "h:" h) h) 1000))
+                         [s []] [1 2 3])]
+      (is (empty? (r/equivocators s'))))))
+
+(deftest an-unsigned-contradiction-is-not-a-proof
+  (testing "it is refused earlier, at the signature, and evidence nobody can
+            check is not evidence"
+    (let [s (checked-replica :w1)
+          [s' _] (r/on-message s (signed-vote :w2 "h:a" 1) 1000)
+          [s'' _] (r/on-message s' (dissoc (signed-vote :w2 "h:b" 1) :sig) 1001)]
+      (is (empty? (r/equivocators s''))))))
+
+(deftest a-quorum-cannot-form-for-both-blocks
+  (testing "safety does not depend on detection — with n=4 the threshold is 3
+            and one equivocator cannot certify two blocks at one height.
+            Detection is what makes it COST something."
+    (let [s (checked-replica :w1)
+          [s' _] (reduce (fn [[s _] w]
+                           (let [[s a] (r/on-message s (signed-vote w "h:a" 1) 1000)]
+                             (r/on-message s (signed-vote w "h:b" 1) 1001)))
+                         [s []] [:w2 :w3 :w4])]
+      (is (some? (get-in s' [:qcs "h:a"])) "the first block certified")
+      (is (nil? (get-in s' [:qcs "h:b"])) "the second did not")
+      (is (= #{"w2" "w3" "w4"} (r/equivocators s'))))))
+
+(deftest evidence-is-in-the-shape-stake-consumes
+  (testing "so slash and verify-equivocation-evidence take it unchanged"
+    (let [s (checked-replica :w1)
+          [s' _] (r/on-message s (signed-vote :w2 "h:a" 1) 1000)
+          [s'' _] (r/on-message s' (signed-vote :w2 "h:b" 1) 1001)
+          ev (first (:equivocations s''))]
+      (is (stake/verify-equivocation-evidence ev vote-verifier))
+      (is (= "w2" (:engi.evidence/witness ev)))
+      (is (= 1 (:engi.evidence/height ev))))))
