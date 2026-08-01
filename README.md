@@ -110,6 +110,55 @@ without it.
   locks hijacked         : 0
 ```
 
+## Four replicas, one exchange
+
+`script/network.cljs` proved consensus works, with a machine written for the
+occasion. `torihiki-node` proved the exchange works, on a single Durable
+Object sequencer whose own `/head` says `consensus: none`. **Each half was
+demonstrated against a stand-in for the other.**
+
+`script/torihiki-on-engi.cljs` is the join: four replicas over real
+WebSockets, each running `torihiki.state/apply-block` on the blocks engi
+commits, with orders submitted to **different replicas in the same instant** —
+the case a single sequencer cannot be asked about, and the only reason two
+traders hitting two nodes have well-defined fills.
+
+```
+  w1  committed 123  root 0ff3920fe6bcdae3  bid/ask 994/996  resting 69
+  w2  committed 124  root 7107880c771bdcb1  bid/ask 994/996  resting 69
+  w3  committed 123  root 0ff3920fe6bcdae3  bid/ask 994/996  resting 69
+  w4  committed 123  root 0ff3920fe6bcdae3  bid/ask 994/996  resting 69
+
+  common committed blocks: 123
+  exchange at that block : {:root "0ff3920f…", :best-bid 994, :best-ask 996,
+                            :resting 69, :last 995, :rejected 0,
+                            :positions {1 58, 2 -29, 3 -29}}
+  every replica the same : true
+
+TORIHIKI-ON-ENGI: pass — four replicas, one exchange
+```
+
+No new engine and no new consensus. `torihiki.state` is unchanged and
+`engi.replica` takes it through the machine seam, which is what that seam was
+for: engi does not know what a transaction is and does not learn here.
+
+### The initial state is produced, not shared
+
+The first run reported four replicas in perfect agreement on an **empty**
+book: every order was refused `:bad-account` because the harness never set
+one, and a refused transaction still commits, so consensus working and nobody
+trading look identical from the outside. The report counts rejections now.
+
+The second run had them agreeing on the committed blocks and disagreeing about
+the resting order count **by two hundred**. torihiki's book is a struct of
+typed arrays — its entire speed argument rests on that — and a machine map
+holding a ready-made exchange gave all four replicas the same book to write
+into.
+
+So `:init-fn` is a thunk rather than `:state` being a value. A machine may own
+mutable structure, and sharing one is not a thing a caller should have to
+remember not to do.
+
 ### Committed blocks execute, which is the point of ordering them
 
 A consensus protocol that agrees on an order and applies nothing has agreed on

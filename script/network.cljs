@@ -110,7 +110,7 @@
   torihiki.state/apply-block on a trading chain and engi.core on a transfer
   ledger, and a consensus layer that imported either would be a consensus
   layer for exactly one application."
-  {:state {:height -1 :applied 0 :digest "genesis"}
+  {:init-fn (fn [] {:height -1 :applied 0 :digest "genesis"})
    :apply-fn (fn [st b]
                {:height (:engi.block/height b)
                 :applied (inc (:applied st))
@@ -347,7 +347,7 @@
                         (let [s @(:state n)
                               prefix (take min-applied (:committed s))]
                           ((:root-fn machine)
-                           (reduce (:apply-fn machine) (:state machine) prefix))))
+                           (reduce (:apply-fn machine) ((:init-fn machine)) prefix))))
                       nodes)
         roots-agree? (apply = roots-at)
         signed-certs? (every? (fn [n]

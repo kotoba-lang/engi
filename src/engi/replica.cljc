@@ -22,9 +22,19 @@
   was weaker than it looked, because agreeing on the ORDER is easy to get
   right by accident when nothing depends on the result.
 
-  The machine is injected as `{:state s0 :apply-fn ... :root-fn ...}`, where
-  apply-fn takes a state and a block and returns the next state, and root-fn
-  takes a state and returns a string. `engi` does not know what a transaction is
+  The machine is injected as `{:init-fn ... :apply-fn ... :root-fn ...}`:
+  init-fn takes nothing and returns a starting state, apply-fn takes a state
+  and a block and returns the next state, and root-fn takes a state and
+  returns a string.
+
+  The initial state is PRODUCED rather than handed over, because a state
+  machine may own mutable structure and four replicas sharing one value is
+  four replicas sharing one state. `torihiki`'s order book is a struct of
+  typed arrays — its whole speed argument rests on that — so a machine map
+  holding a ready-made exchange gave every replica the same book, and they
+  agreed on the committed blocks while disagreeing about the resting order
+  count by two hundred. A thunk makes that unrepresentable rather than
+  documented. `engi` does not know what a transaction is
   and must not — that is `torihiki.state` for a trading chain and
   `engi.core` for transfers, and a consensus layer that imported either would
   be a consensus layer for exactly one application.
@@ -211,7 +221,7 @@
      ;; (an ordering service) and a misleading default for anything else — so
      ;; `state-root` returns nil rather than a plausible-looking constant.
      :machine machine
-     :machine-state (:state machine)
+     :machine-state (when-let [f (:init-fn machine)] (f))
      :committed []
      :pending []
      :last-proposed-at 0}))

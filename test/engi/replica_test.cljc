@@ -508,7 +508,7 @@
   "Order-sensitive on purpose: a machine whose result did not depend on the
   order would make agreement on the order untestable, which is the only thing
   consensus produces."
-  {:state []
+  {:init-fn (fn [] [])
    :apply-fn (fn [st b] (conj st (:engi.block/height b)))
    :root-fn (fn [st] (str (count st) ":" (clojure.string/join "," st)))})
 
@@ -565,8 +565,21 @@
     (let [blocks [{:engi.block/height 1} {:engi.block/height 2}]
           f (:apply-fn counting-machine)
           root (:root-fn counting-machine)]
-      (is (= (root (reduce f (:state counting-machine) blocks))
-             (root (reduce f (:state counting-machine) blocks))))
-      (is (not= (root (reduce f (:state counting-machine) blocks))
-                (root (reduce f (:state counting-machine) (reverse blocks))))
+      (is (= (root (reduce f ((:init-fn counting-machine)) blocks))
+             (root (reduce f ((:init-fn counting-machine)) blocks))))
+      (is (not= (root (reduce f ((:init-fn counting-machine)) blocks))
+                (root (reduce f ((:init-fn counting-machine)) (reverse blocks))))
           "and a machine insensitive to order would make this test vacuous"))))
+
+(deftest each-replica-gets-its-own-initial-state
+  (testing "a state machine may own mutable structure — torihiki's book is a
+            struct of typed arrays — so four replicas sharing one value is
+            four replicas sharing one state. Producing it makes that
+            unrepresentable rather than documented."
+    (let [calls (atom 0)
+          m {:init-fn (fn [] (swap! calls inc) [])
+             :apply-fn conj :root-fn str}]
+      (doseq [w witnesses]
+        (r/replica {:witness w :witnesses witnesses :quorum 3
+                    :hash-fn hash-fn :machine m}))
+      (is (= 4 @calls) "the initial state was produced once per replica"))))
