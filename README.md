@@ -78,6 +78,38 @@ produce a certificate. `verify-fn` nil still means "check nothing", which is
 correct for replaying a history this replica already agreed to and wrong for
 anything else, so `replica` says which rather than defaulting quietly.
 
+### And a new-view nobody signed is worse than an unsigned vote
+
+The same hole, one message type over, and with a larger blast radius. A
+timeout certificate is folded out of the high QCs carried by new-view
+messages, and `on-timeout-certificate` feeds the result **straight into the
+lock**. So an unsigned new-view is not a liveness nuisance — whoever can send
+quorum-many of them decides what every replica locks onto, and a lock on a
+block that never existed either stops the chain or moves it onto a fork.
+
+```clojure
+(without-verification-a-stranger-chooses-the-lock)
+;; => locked-qc block-hash is "h:invented"
+```
+
+New-views are signed over the view **and the identity of the certificate they
+carry**, so a genuine message cannot have its certificate swapped — a payload
+naming only the view and the signer would leave the load-bearing part
+unprotected. The certificate inside is re-verified on arrival too: a signed
+message asserting an unverified certificate moves the forgery one level in
+rather than stopping it.
+
+`a-genuine-view-change-still-happens` is the other half. A check that refuses
+everything is not a check, and the forger's clean sheet below means nothing
+without it.
+
+```
+  forged votes accepted  : 0 (of 36 sent)
+  forged certificates    : 0
+  forged new-views taken : 0 (of 24 sent)
+  locks hijacked         : 0
+```
+
 ### Three bugs, and the deterministic test could see none of them
 
 Each was found by running, and each was invisible to a map-for-a-transport

@@ -164,8 +164,12 @@
                    "block-hash" (:block-hash msg) "height" (:height msg)
                    "view" (:view msg)}
             (:sig msg) (assoc "sig" (str (:sig msg))))
-    :new-view {"t" "new-view" "witness" (wire-id (:witness msg))
-               "view" (:view msg) "high-qc" (enc-qc (:high-qc msg))}
+    ;; Signed for the same reason a vote is, and more urgently: a timeout
+    ;; certificate is folded out of these messages' high QCs, so whoever
+    ;; controls them controls what every replica locks onto.
+    :new-view (cond-> {"t" "new-view" "witness" (wire-id (:witness msg))
+                       "view" (:view msg) "high-qc" (enc-qc (:high-qc msg))}
+                (:sig msg) (assoc "sig" (str (:sig msg))))
     :sync-request {"t" "sync-request" "from" (:from msg) "to" (:to msg)}
     :sync-response {"t" "sync-response" "blocks" (mapv enc-block (:blocks msg))}
     (throw (ex-info "engi.wire: cannot encode unknown message type"
@@ -208,12 +212,14 @@
              high (when q (dec-qc q limits))]
          (if (and (str-ok? (get m "witness") limits)
                   (nat? (get m "view"))
+                  (or (nil? (get m "sig")) (str-ok? (get m "sig") limits))
                   ;; a replica that has never seen a certificate legitimately
                   ;; reports none; one that reports a broken certificate does
                   ;; not get to have it read as none
                   (or (nil? q) (some? high)))
-           [{:type :new-view :witness (get m "witness")
-             :view (get m "view") :high-qc high} nil]
+           [(cond-> {:type :new-view :witness (get m "witness")
+                     :view (get m "view") :high-qc high}
+              (get m "sig") (assoc :sig (get m "sig"))) nil]
            [nil :bad-shape]))
 
        "sync-request"

@@ -283,3 +283,82 @@
       (is (att/signed? cert))
       (is (nil? (att/verify-certificate cert chain (c/quorum-size 4) fake-verify))
           "and it verifies"))))
+
+;; ── the view-change path ────────────────────────────────────────────────────
+
+(defn- genuine-cert
+  "A certificate for `bh` signed by a quorum, the way a replica builds one."
+  [bh]
+  (let [s (checked-replica :w1)
+        [s' _] (reduce (fn [[s _] v]
+                         (let [sig ((fake-sign (name v))
+                                    (att/vote-payload chain 0 1 bh (name v)))]
+                           (r/on-message s (assoc (forge v bh) :sig sig) 1000)))
+                       [s []] [:w2 :w3 :w4])]
+    (get-in s' [:qcs bh])))
+
+(defn- nv [w view high-qc]
+  (let [wn (name w)]
+    {:type :new-view :witness wn :view view :high-qc high-qc
+     :sig ((fake-sign wn) (att/new-view-payload chain view wn high-qc))}))
+
+(deftest a-genuine-view-change-still-happens
+  (testing "the refusals below are worth nothing if the honest path is broken
+            too — a check that refuses everything is not a check"
+    (let [cert (genuine-cert "h:real")
+          s (checked-replica :w1)
+          [s' _] (reduce (fn [[s _] w] (r/on-message s (nv w 7 cert) 1000))
+                         [s []] [:w2 :w3 :w4])]
+      (is (= 3 (count (get-in s' [:new-views 7]))))
+      (is (= 8 (:view (:pm s'))) "entered the view the certificate names")
+      (is (= "h:real" (get-in s' [:pm :locked-qc :engi.qc/block-hash]))))))
+
+(deftest an-unsigned-new-view-decides-nothing
+  (testing "a timeout certificate is folded out of these, and the result goes
+            straight into the lock — so quorum-many unsigned ones would let a
+            stranger choose what every replica locks onto"
+    (let [cert (genuine-cert "h:real")
+          s (checked-replica :w1)
+          [s' _] (reduce (fn [[s _] w]
+                           (r/on-message s (dissoc (nv w 7 cert) :sig) 1000))
+                         [s []] [:w2 :w3 :w4])]
+      (is (empty? (get-in s' [:new-views 7])))
+      (is (= 0 (:view (:pm s')))))))
+
+(deftest a-new-view-carrying-a-certificate-nobody-signed-is-refused
+  (testing "signing the message and asserting an unverified certificate inside
+            it moves the forgery one level in, it does not stop it"
+    (let [fake {:engi.qc/block-hash "h:invented" :engi.qc/height 9999
+                :engi.qc/view 9999 :engi.qc/witnesses #{"w2" "w3" "w4"}
+                :engi.qc/vote-count 3}
+          s (checked-replica :w1)
+          [s' _] (reduce (fn [[s _] w] (r/on-message s (nv w 9999 fake) 1000))
+                         [s []] [:w2 :w3 :w4])]
+      (is (empty? (get-in s' [:new-views 9999])))
+      (is (nil? (get-in s' [:pm :locked-qc]))
+          "no lock onto a block nobody proposed"))))
+
+(deftest the-certificate-cannot-be-swapped-out-of-a-genuine-new-view
+  (testing "which is why the payload covers the certificate's identity and not
+            just the view and the signer"
+    (let [real (genuine-cert "h:real")
+          fake {:engi.qc/block-hash "h:invented" :engi.qc/height 9999
+                :engi.qc/view 9999 :engi.qc/witnesses #{"w2" "w3" "w4"}
+                :engi.qc/vote-count 3 :engi.qc/sigs {"w2" "x" "w3" "y" "w4" "z"}}
+          s (checked-replica :w1)
+          swapped (assoc (nv :w2 7 real) :high-qc fake)
+          [s' _] (r/on-message s swapped 1000)]
+      (is (empty? (get-in s' [:new-views 7]))))))
+
+(deftest without-verification-a-stranger-chooses-the-lock
+  (testing "the hole, asserted rather than described"
+    (let [fake {:engi.qc/block-hash "h:invented" :engi.qc/height 9999
+                :engi.qc/view 9999 :engi.qc/witnesses #{:w2 :w3 :w4}
+                :engi.qc/vote-count 3}
+          s (get (net) :w1)                        ; no verify-fn
+          [s' _] (reduce (fn [[s _] w]
+                           (r/on-message s {:type :new-view :witness w
+                                            :view 9999 :high-qc fake} 1000))
+                         [s []] [:w2 :w3 :w4])]
+      (is (= "h:invented" (get-in s' [:pm :locked-qc :engi.qc/block-hash]))
+          "locked onto a block that never existed"))))

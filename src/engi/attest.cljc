@@ -62,6 +62,26 @@
                                 (:engi.vote/block-hash vote)
                                 (:engi.vote/witness vote)))))
 
+(defn new-view-payload
+  "The canonical string a witness signs when it abandons a view.
+
+  Covers the high QC's identity, not just the view and the signer. A payload
+  that named only the view would let an attacker take a genuine signed
+  new-view and swap the certificate inside it — and the certificate is the
+  load-bearing part of the message, since it is how the next leader learns
+  what it must extend and what every replica will lock onto.
+
+  A nil high QC is signed as such rather than omitted, so 'I have nothing' and
+  'the field was stripped' are different strings."
+  [chain-id view witness high-qc]
+  (str "engi/new-view/v1\n"
+       "chain=" chain-id "\n"
+       "view=" view "\n"
+       "witness=" witness "\n"
+       "high-block=" (:engi.qc/block-hash high-qc "none") "\n"
+       "high-height=" (:engi.qc/height high-qc -1) "\n"
+       "high-view=" (:engi.qc/view high-qc -1) "\n"))
+
 (defn certify
   "Attach the votes' signatures to a certificate, keyed by witness.
 

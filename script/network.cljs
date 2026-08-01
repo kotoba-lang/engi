@@ -189,7 +189,29 @@
                                      :block-hash forged-hash :height 1 :view 0
                                      :sig ((sign-as victim)
                                            (att/vote-payload "engi-othernet-9" 0 1
-                                                             forged-hash victim))})))))))
+                                                             forged-hash victim))}))))
+             ;; 4. a new-view carrying a certificate for a block that does not
+             ;;    exist. This is the worse attack: a timeout certificate is
+             ;;    folded out of these, and on-timeout-certificate feeds the
+             ;;    result straight into the lock — so quorum-many of these
+             ;;    decide what every replica locks onto.
+             (let [fake-qc {:engi.qc/block-hash forged-hash
+                            :engi.qc/height 9999
+                            :engi.qc/view 9999
+                            :engi.qc/witnesses #{"w2" "w3" "w4"}
+                            :engi.qc/vote-count 3}]
+               (.send sock (js/JSON.stringify
+                            (clj->js (wire/encode {:type :new-view :witness victim
+                                                   :view 9999 :high-qc fake-qc}))))
+               ;; and the same thing signed by the wrong key, so 'unsigned' is
+               ;; not the only reason it fails
+               (.send sock (js/JSON.stringify
+                            (clj->js (wire/encode
+                                      {:type :new-view :witness victim
+                                       :view 9999 :high-qc fake-qc
+                                       :sig (sign-with other
+                                              (att/new-view-payload chain-id 9999
+                                                                    victim fake-qc))}))))))))
         sock))))
 
 ;; ── run ─────────────────────────────────────────────────────────────────────
@@ -216,6 +238,11 @@
         forged-votes (apply + (map #(count (get-in @(:state %) [:votes forged-hash] {}))
                                    nodes))
         forged-certs (count (filter #(get-in @(:state %) [:qcs forged-hash]) nodes))
+        forged-nvs (apply + (map #(count (get-in @(:state %) [:new-views 9999] {}))
+                                 nodes))
+        hijacked (count (filter #(= forged-hash
+                                    (get-in @(:state %) [:pm :locked-qc :engi.qc/block-hash]))
+                                nodes))
         signed-certs? (every? (fn [n]
                                 (let [s @(:state n)]
                                   (every? #(att/signed? (val %)) (:qcs s))))
@@ -226,12 +253,16 @@
     (println "  every certificate signed:" signed-certs?)
     (println "  forged votes accepted  :" forged-votes "(of 36 sent)")
     (println "  forged certificates    :" forged-certs)
+    (println "  forged new-views taken :" forged-nvs "(of 24 sent)")
+    (println "  locks hijacked         :" hijacked)
     (println "")
     (cond
       (not progressed?) (do (println "NETWORK: FAIL — nothing was committed") 1)
       (not agree?) (do (println "NETWORK: FAIL — replicas committed different blocks") 1)
       (pos? forged-votes) (do (println "NETWORK: FAIL — a forged vote was counted") 1)
       (pos? forged-certs) (do (println "NETWORK: FAIL — a forged certificate formed") 1)
+      (pos? forged-nvs) (do (println "NETWORK: FAIL — a forged new-view was counted") 1)
+      (pos? hijacked) (do (println "NETWORK: FAIL — a replica locked onto a block nobody proposed") 1)
       (not signed-certs?) (do (println "NETWORK: FAIL — a certificate carried no signatures") 1)
       :else (do (println "NETWORK: pass — consensus ran over real sockets,"
                          "and every forgery was refused") 0))))

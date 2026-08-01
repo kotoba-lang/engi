@@ -13,6 +13,19 @@
   terminal whose client was compiled, deployed, and never referenced from the
   page: every part green, the whole thing never executed.
 
+  ## And a new-view nobody signed is worse than an unsigned vote
+
+  A timeout certificate is folded out of the high QCs carried by new-view
+  messages, and `on-timeout-certificate` feeds that QC straight into the lock.
+  So an unsigned new-view is not merely a liveness nuisance: whoever can send
+  quorum-many of them decides what every replica locks onto, and a lock on a
+  block that never existed either stops the chain or moves it onto a fork.
+
+  New-views are signed over the view AND the identity of the certificate they
+  carry, so a genuine one cannot have its certificate swapped. The certificate
+  inside is itself re-verified — a signed message asserting an unverified
+  certificate would just move the forgery one level in.
+
   ## A vote nobody signed is a claim, not a vote
 
   A replica assembles certificates out of the votes it receives. So an
@@ -333,16 +346,32 @@
       (cast-vote state b now))))
 
 (defn- handle-new-view
-  [state {:keys [witness view high-qc]} now]
+  [state {:keys [witness view high-qc sig]} now]
   (let [witness (wire/wire-id witness)
-        state (update-in state [:new-views view] (fnil assoc {}) witness
-                         {:engi.nv/witness witness :engi.nv/view view
-                          :engi.nv/high-qc high-qc})
-        msgs (vals (get-in state [:new-views view]))]
-    (if-let [tc (pm/timeout-certificate (vec msgs) (:quorum state))]
-      (let [state (update state :pm pm/on-timeout-certificate tc now (:params state))]
-        (propose state now))
-      [state []])))
+        verify (:verify-fn state)
+        ok? (or (nil? verify)
+                (and sig
+                     (verify witness
+                             (att/new-view-payload (:chain-id state) view
+                                                   witness high-qc)
+                             sig)
+                     ;; and the certificate it carries has to hold up on its
+                     ;; own — a signed message asserting an unverified
+                     ;; certificate moves the forgery one level in, it does
+                     ;; not stop it
+                     (or (nil? high-qc)
+                         (nil? (att/verify-certificate high-qc (:chain-id state)
+                                                       (:quorum state) verify)))))]
+    (if-not ok?
+      [state []]
+      (let [state (update-in state [:new-views view] (fnil assoc {}) witness
+                             {:engi.nv/witness witness :engi.nv/view view
+                              :engi.nv/high-qc high-qc})
+            msgs (vals (get-in state [:new-views view]))]
+        (if-let [tc (pm/timeout-certificate (vec msgs) (:quorum state))]
+          (let [state (update state :pm pm/on-timeout-certificate tc now (:params state))]
+            (propose state now))
+          [state []])))))
 
 (defn- handle-sync-request
   [state {:keys [from to]}]
@@ -381,8 +410,13 @@
   (let [pmst (:pm state)]
     (if (and (pos? (:deadline pmst)) (pm/expired? pmst now))
       (let [[pm' nv] (pm/on-timeout pmst now (:failures pmst 0) (:params state))]
-        (let [msg {:type :new-view :witness (:witness state)
-                   :view (:engi.nv/view nv) :high-qc (:engi.nv/high-qc nv)}
+        (let [w (:witness state)
+              v (:engi.nv/view nv)
+              hq (:engi.nv/high-qc nv)
+              sig (when-let [f (:sign-fn state)]
+                    (f (att/new-view-payload (:chain-id state) v w hq)))
+              msg (cond-> {:type :new-view :witness w :view v :high-qc hq}
+                    sig (assoc :sig sig))
               [state' out] (handle-new-view (assoc state :pm pm') msg now)]
           [state' (into [{:to :all :msg msg}] out)]))
       (propose state now))))
