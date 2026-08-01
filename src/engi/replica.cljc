@@ -531,9 +531,25 @@
 
 (defn on-tick
   "Time passed. Times the view out when the deadline has gone by, and
-  proposes when this replica leads and holds a certificate for the tip."
+  proposes when this replica leads and holds a certificate for the tip.
+
+  Starts the clock when there is none. `pm/initial` leaves the deadline at 0
+  and it was read as 'no clock yet, do not time out' — so a replica that never
+  saw a certificate never got a deadline, never timed out, never sent a
+  new-view, and therefore never got a certificate. A deadlock at startup with
+  nothing on the wire and no error anywhere.
+
+  In one process it never showed: every vote arrives within a millisecond and
+  the first certificate forms before anything could time out. Deployed over
+  HTTP, one lost vote at genesis is a chain that sits at height one forever —
+  which is exactly what four validators did, and the tail showed the symptom
+  as an absence, zero messages sent, rather than as a failure."
   [state now]
   (let [pmst (:pm state)]
+    (if (zero? (:deadline pmst 0))
+      [(assoc-in state [:pm :deadline]
+                 (+ now (pm/timeout-for 0 (:params state))))
+       []]
     (if (and (pos? (:deadline pmst)) (pm/expired? pmst now))
       (let [[pm' nv] (pm/on-timeout pmst now (:failures pmst 0) (:params state))]
         (let [w (:witness state)
@@ -545,7 +561,7 @@
                     sig (assoc :sig sig))
               [state' out] (handle-new-view (assoc state :pm pm') msg now)]
           [state' (into [{:to :all :msg msg}] out)]))
-      (propose state now))))
+      (propose state now)))))
 
 (defn start
   "The first proposal. Genesis has no certificate, so the height-1 leader

@@ -583,3 +583,26 @@
         (r/replica {:witness w :witnesses witnesses :quorum 3
                     :hash-fn hash-fn :machine m}))
       (is (= 4 @calls) "the initial state was produced once per replica"))))
+
+;; ── the clock has to start on its own ───────────────────────────────────────
+
+(deftest a-replica-with-no-deadline-starts-one
+  (testing "pm/initial leaves the deadline at 0 and it was read as 'no clock
+            yet, do not time out' — so a replica that never saw a certificate
+            never got a deadline, never timed out, never sent a new-view, and
+            therefore never got a certificate. A deadlock at startup with
+            nothing on the wire and no error anywhere."
+    (let [s (get (net) :w2)
+          [s' out] (r/on-tick s 5000)]
+      (is (zero? (:deadline (:pm s))) "the state this starts from")
+      (is (pos? (:deadline (:pm s'))) "and the clock is running after one tick")
+      (is (empty? out) "starting the clock says nothing to anybody"))))
+
+(deftest once-the-clock-runs-a-stalled-replica-times-out
+  (testing "which is the whole point: a view that produces nothing has to end,
+            or a chain that loses one vote at genesis sits there forever"
+    (let [s (get (net) :w2)
+          [s1 _] (r/on-tick s 1000)
+          deadline (:deadline (:pm s1))
+          [_ out] (r/on-tick s1 (inc deadline))]
+      (is (= [:new-view] (mapv #(:type (:msg %)) out))))))
