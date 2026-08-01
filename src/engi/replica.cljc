@@ -13,6 +13,20 @@
   terminal whose client was compiled, deployed, and never referenced from the
   page: every part green, the whole thing never executed.
 
+  ## Catching up goes through `engi.sync`, which it did not
+
+  `engi.sync` exists to decide what a lagging replica may believe from a
+  stranger: that a segment attaches to a block already held, that heights are
+  contiguous, that every block is justified by a certificate for its own
+  parent, that the certificate carries a quorum of signatures that actually
+  verify, and that the whole thing is bounded. All of it tested. None of it
+  reached — `handle-sync-response` walked the blocks itself and checked only
+  that each linked to the one before.
+
+  So the third instance of the same defect: a careful namespace nothing
+  called. A peer could hand over an unbounded segment whose certificates named
+  witnesses who never voted, and it would be adopted as history.
+
   ## And a new-view nobody signed is worse than an unsigned vote
 
   A timeout certificate is folded out of the high QCs carried by new-view
@@ -94,6 +108,7 @@
             [engi.pacemaker :as pm]
             [engi.quorum :as q]
             [engi.attest :as att]
+            [engi.sync :as sync]
             [engi.wire :as wire]))
 
 (def default-params
@@ -374,20 +389,42 @@
           [state []])))))
 
 (defn- handle-sync-request
+  "Answer with at most `:max-batch` blocks.
+
+  Unclamped, `{from 1, to 999999}` makes every replica serialise its whole
+  chain — one small message costing the network everything it holds, from a
+  peer that has to be neither a witness nor even correct. `engi.sync/request`
+  already asks in windows for the replica's own sake; this is the same bound
+  applied where it is a defence rather than a convenience."
   [state {:keys [from to]}]
-  (let [blocks (->> (:chain state)
+  (let [cap (:max-batch sync/default-params)
+        blocks (->> (:chain state)
                     (filter #(<= from (:engi.block/height %) to))
+                    (take cap)
                     vec)]
     [state (if (seq blocks)
              [{:to :all :msg {:type :sync-response :blocks blocks}}]
              [])]))
 
 (defn- handle-sync-response
+  "Adopt a segment through `engi.sync`, or refuse it whole.
+
+  Whole, because adopting the valid prefix of a bad segment lets a peer choose
+  where this replica's history ends by appending garbage to a good answer —
+  which is `engi.sync`'s reasoning, and the reason to call it rather than to
+  re-implement a weaker version of it here."
   [state {:keys [blocks]}]
-  [(reduce (fn [s b] (-> s (remember-block b) (extend-chain b)))
-           state
-           (sort-by :engi.block/height blocks))
-   []])
+  (let [segment (vec (sort-by :engi.block/height blocks))
+        {:keys [chain adopted]}
+        (sync/sync-step (:hash-fn state) (:quorum state) (:chain state) segment
+                        sync/default-params (:chain-id state) (:verify-fn state))]
+    (if (pos? adopted)
+      [(-> state
+           (assoc :chain chain)
+           (as-> s (reduce remember-block s segment))
+           absorb-commits)
+       []]
+      [state []])))
 
 (defn on-message
   "Fold one decoded message. Returns `[state' outbox]`.

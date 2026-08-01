@@ -110,6 +110,36 @@ without it.
   locks hijacked         : 0
 ```
 
+### Catching up went through nothing
+
+`engi.sync` decides what a lagging replica may believe from a stranger: that a
+segment attaches to a block already held, that heights are contiguous, that
+every block is justified by a certificate for its own parent, that the
+certificate carries a **quorum of signatures that actually verify**, and that
+the whole thing is bounded. Refused whole rather than by prefix, because
+adopting the valid prefix of a bad segment lets a peer choose where the
+replica's history ends by appending garbage to a good answer.
+
+All of it tested. None of it reached. `handle-sync-response` walked the blocks
+itself and checked only that each linked to the one before — the third
+instance in this file of a careful namespace nothing called.
+
+A peer could hand over an unbounded segment whose certificates named witnesses
+who never voted, and it was adopted as history.
+
+Catch-up goes through `engi.sync` now, and a `sync-request` is answered with
+at most `:max-batch` blocks — unclamped, `{from 1, to 999999}` makes every
+replica serialise its whole chain, a cost imposed by one small message from a
+peer that need not be a witness or even correct.
+
+```
+  forged votes accepted  : 0 (of 36 sent)
+  forged certificates    : 0
+  forged new-views taken : 0 (of 24 sent)
+  locks hijacked         : 0
+  forged histories taken : 0
+```
+
 ### Three bugs, and the deterministic test could see none of them
 
 Each was found by running, and each was invisible to a map-for-a-transport

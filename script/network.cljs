@@ -148,71 +148,75 @@
   "0000forged0000forged0000forged0000forged0000forged0000forged0000")
 
 (defn forge!
-  "Dial every replica and send votes claiming to be the other witnesses.
+  "Dial every replica and try, in six ways, to get it to believe something.
 
-  Three flavours, because they fail for different reasons and a run that only
-  tried one would not distinguish 'signatures are checked' from 'this
-  particular shape is rejected':
+  Each fails for a different reason, and a run that tried only one would not
+  distinguish 'signatures are checked' from 'this particular shape is
+  rejected':
 
-  1. no signature at all — the attack that worked until votes carried one
-  2. a signature that is real but from the WRONG key (the forger's own)
-  3. a signature valid for a DIFFERENT chain — domain separation, which is
-     the whole reason chain-id is in the payload"
+  1. a vote with no signature — the attack that worked until votes carried one
+  2. a vote signed with a key that is not the victim's
+  3. a vote correctly signed for a DIFFERENT chain — domain separation, which
+     is why chain-id is in the payload
+  4. new-views carrying a certificate for a block at height 9999 that does not
+     exist. The worst of these: a timeout certificate is folded out of them
+     and fed straight into the lock, so quorum-many decide what every replica
+     locks onto
+  5. a history — a well-formed, internally consistent segment whose
+     certificates simply name witnesses who never voted. Adopted as the
+     replica's past until catch-up went through engi.sync
+  6. a request for every block there is, which unclamped makes each replica
+     serialise its whole chain to everybody"
   []
   (let [other (nc/generateKeyPairSync "ed25519")
         sign-with (fn [kp payload]
                     (.toString (nc/sign nil (js/Buffer.from payload "utf8")
-                                        (.-privateKey kp)) "base64"))]
+                                        (.-privateKey kp)) "base64"))
+        send! (fn [sock msg]
+                (.send sock (js/JSON.stringify (clj->js (wire/encode msg)))))]
     (doseq [w witnesses]
       (let [sock (js/WebSocket. (str "ws://127.0.0.1:" (port-of w)))]
         (.addEventListener
          sock "open"
          (fn [_]
            (doseq [victim ["w2" "w3" "w4"]]
-             ;; 1. unsigned
-             (.send sock (js/JSON.stringify
-                          (clj->js (wire/encode {:type :vote :witness victim
-                                                 :block-hash forged-hash
-                                                 :height 1 :view 0}))))
-             ;; 2. signed with a key that is not the victim's
-             (.send sock (js/JSON.stringify
-                          (clj->js (wire/encode
-                                    {:type :vote :witness victim
-                                     :block-hash forged-hash :height 1 :view 0
-                                     :sig (sign-with other
-                                            (att/vote-payload chain-id 0 1
-                                                              forged-hash victim))}))))
-             ;; 3. correctly signed, for another chain
-             (.send sock (js/JSON.stringify
-                          (clj->js (wire/encode
-                                    {:type :vote :witness victim
-                                     :block-hash forged-hash :height 1 :view 0
-                                     :sig ((sign-as victim)
-                                           (att/vote-payload "engi-othernet-9" 0 1
-                                                             forged-hash victim))}))))
-             ;; 4. a new-view carrying a certificate for a block that does not
-             ;;    exist. This is the worse attack: a timeout certificate is
-             ;;    folded out of these, and on-timeout-certificate feeds the
-             ;;    result straight into the lock — so quorum-many of these
-             ;;    decide what every replica locks onto.
+             (send! sock {:type :vote :witness victim :block-hash forged-hash
+                          :height 1 :view 0})
+             (send! sock {:type :vote :witness victim :block-hash forged-hash
+                          :height 1 :view 0
+                          :sig (sign-with other
+                                 (att/vote-payload chain-id 0 1 forged-hash victim))})
+             (send! sock {:type :vote :witness victim :block-hash forged-hash
+                          :height 1 :view 0
+                          :sig ((sign-as victim)
+                                (att/vote-payload "engi-othernet-9" 0 1
+                                                  forged-hash victim))})
              (let [fake-qc {:engi.qc/block-hash forged-hash
-                            :engi.qc/height 9999
-                            :engi.qc/view 9999
+                            :engi.qc/height 9999 :engi.qc/view 9999
                             :engi.qc/witnesses #{"w2" "w3" "w4"}
                             :engi.qc/vote-count 3}]
-               (.send sock (js/JSON.stringify
-                            (clj->js (wire/encode {:type :new-view :witness victim
-                                                   :view 9999 :high-qc fake-qc}))))
-               ;; and the same thing signed by the wrong key, so 'unsigned' is
-               ;; not the only reason it fails
-               (.send sock (js/JSON.stringify
-                            (clj->js (wire/encode
-                                      {:type :new-view :witness victim
-                                       :view 9999 :high-qc fake-qc
-                                       :sig (sign-with other
-                                              (att/new-view-payload chain-id 9999
-                                                                    victim fake-qc))}))))))))
-        sock))))
+               (send! sock {:type :new-view :witness victim :view 9999
+                            :high-qc fake-qc})
+               (send! sock {:type :new-view :witness victim :view 9999
+                            :high-qc fake-qc
+                            :sig (sign-with other
+                                   (att/new-view-payload chain-id 9999 victim
+                                                         fake-qc))})))
+           (let [g (c/make-block {:height 0 :parent-hash "genesis" :proposals []
+                                  :proposer (wire/wire-id (first witnesses))
+                                  :ts 0 :justify nil})
+                 gh (hash-fn g)]
+             (send! sock {:type :sync-response
+                          :blocks [(c/make-block
+                                    {:height 1 :parent-hash gh
+                                     :proposals ["forged"] :proposer "w1" :ts 10
+                                     :justify {:engi.qc/block-hash gh
+                                               :engi.qc/height 0 :engi.qc/view 0
+                                               :engi.qc/witnesses #{"w2" "w3" "w4"}
+                                               :engi.qc/vote-count 3
+                                               :engi.qc/sigs {"w2" "x" "w3" "y"
+                                                              "w4" "z"}}})]}))
+           (send! sock {:type :sync-request :from 0 :to 999999})))))))
 
 ;; ── run ─────────────────────────────────────────────────────────────────────
 
@@ -240,6 +244,10 @@
         forged-certs (count (filter #(get-in @(:state %) [:qcs forged-hash]) nodes))
         forged-nvs (apply + (map #(count (get-in @(:state %) [:new-views 9999] {}))
                                  nodes))
+        forged-history (count (filter (fn [n]
+                                        (some #(= ["forged"] (:engi.block/proposals %))
+                                              (:chain @(:state n))))
+                                      nodes))
         hijacked (count (filter #(= forged-hash
                                     (get-in @(:state %) [:pm :locked-qc :engi.qc/block-hash]))
                                 nodes))
@@ -255,6 +263,7 @@
     (println "  forged certificates    :" forged-certs)
     (println "  forged new-views taken :" forged-nvs "(of 24 sent)")
     (println "  locks hijacked         :" hijacked)
+    (println "  forged histories taken :" forged-history)
     (println "")
     (cond
       (not progressed?) (do (println "NETWORK: FAIL — nothing was committed") 1)
@@ -263,6 +272,7 @@
       (pos? forged-certs) (do (println "NETWORK: FAIL — a forged certificate formed") 1)
       (pos? forged-nvs) (do (println "NETWORK: FAIL — a forged new-view was counted") 1)
       (pos? hijacked) (do (println "NETWORK: FAIL — a replica locked onto a block nobody proposed") 1)
+      (pos? forged-history) (do (println "NETWORK: FAIL — a forged segment was adopted as history") 1)
       (not signed-certs?) (do (println "NETWORK: FAIL — a certificate carried no signatures") 1)
       :else (do (println "NETWORK: pass — consensus ran over real sockets,"
                          "and every forgery was refused") 0))))

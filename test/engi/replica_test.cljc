@@ -8,7 +8,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [engi.replica :as r]
             [engi.attest :as att]
-            [engi.consensus :as c]))
+            [engi.consensus :as c]
+            [engi.sync :as sync]))
 
 (def witnesses [:w1 :w2 :w3 :w4])
 
@@ -288,14 +289,16 @@
 
 (defn- genuine-cert
   "A certificate for `bh` signed by a quorum, the way a replica builds one."
-  [bh]
-  (let [s (checked-replica :w1)
-        [s' _] (reduce (fn [[s _] v]
-                         (let [sig ((fake-sign (name v))
-                                    (att/vote-payload chain 0 1 bh (name v)))]
-                           (r/on-message s (assoc (forge v bh) :sig sig) 1000)))
-                       [s []] [:w2 :w3 :w4])]
-    (get-in s' [:qcs bh])))
+  ([bh] (genuine-cert bh 1))
+  ([bh height]
+   (let [s (checked-replica :w1)
+         [s' _] (reduce (fn [[s _] v]
+                          (let [sig ((fake-sign (name v))
+                                     (att/vote-payload chain 0 height bh (name v)))]
+                            (r/on-message s (assoc (forge v bh)
+                                                   :height height :sig sig) 1000)))
+                        [s []] [:w2 :w3 :w4])]
+     (get-in s' [:qcs bh]))))
 
 (defn- nv [w view high-qc]
   (let [wn (name w)]
@@ -362,3 +365,56 @@
                          [s []] [:w2 :w3 :w4])]
       (is (= "h:invented" (get-in s' [:pm :locked-qc :engi.qc/block-hash]))
           "locked onto a block that never existed"))))
+
+;; ── catching up ─────────────────────────────────────────────────────────────
+
+(defn- certified-child
+  "A block at `height` extending `parent`, justified by a real certificate."
+  [parent height certify?]
+  (let [ph (hash-fn parent)
+        q (if certify?
+            (genuine-cert ph (:engi.block/height parent))
+            ;; named witnesses, signatures that verify for nobody
+            {:engi.qc/block-hash ph :engi.qc/height (:engi.block/height parent)
+             :engi.qc/view 0 :engi.qc/witnesses #{"w2" "w3" "w4"}
+             :engi.qc/vote-count 3 :engi.qc/sigs {"w2" "x" "w3" "y" "w4" "z"}})]
+    (c/make-block {:height height :parent-hash ph :proposals []
+                   :proposer :w1 :ts (* 10 height) :justify q})))
+
+(deftest a-segment-whose-certificates-do-not-verify-is-refused-whole
+  (testing "engi.sync says a peer must not get to choose where this replica's
+            history ends by appending garbage to a good answer — which is the
+            reason to call it rather than re-implement a weaker version"
+    (let [s (checked-replica :w1)
+          bad (certified-child (r/tip s) 1 false)
+          [s' out] (r/on-message s {:type :sync-response :blocks [bad]} 1000)]
+      (is (= 0 (r/height s')) "adopted a block certified by nobody")
+      (is (empty? out)))))
+
+(deftest a-genuine-segment-is-adopted
+  (testing "otherwise the refusal above is a check that refuses everything"
+    (let [s (checked-replica :w1)
+          good (certified-child (r/tip s) 1 true)
+          [s' _] (r/on-message s {:type :sync-response :blocks [good]} 1000)]
+      (is (= 1 (r/height s'))))))
+
+(deftest an-oversized-segment-is-refused
+  (testing "a peer needs no invalid data to exhaust a replica"
+    (let [s (get (net) :w1)                        ; no verify-fn: shape only
+          g (r/tip s)
+          many (mapv (fn [i] (certified-child g (inc i) false))
+                     (range (inc (:max-batch sync/default-params))))
+          [s' _] (r/on-message s {:type :sync-response :blocks many} 1000)]
+      (is (= 0 (r/height s'))))))
+
+(deftest a-sync-request-for-everything-is-answered-with-a-window
+  (testing "unclamped, one small message makes every replica serialise its
+            whole chain — a cost imposed by a peer that need not be a witness"
+    (let [s (assoc (get (net) :w1)
+                   :chain (mapv (fn [i] (c/make-block {:height i :parent-hash "p"
+                                                       :proposals [] :proposer :w1
+                                                       :ts i :justify nil}))
+                                (range 1000)))
+          [_ out] (r/on-message s {:type :sync-request :from 0 :to 999999} 1000)]
+      (is (= (:max-batch sync/default-params)
+             (count (:blocks (:msg (first out)))))))))
