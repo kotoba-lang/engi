@@ -451,3 +451,44 @@ npm run test:live       # LIVE integration test against PRODUCTION kotobase.net 
 CI (`.github/workflows/ci.yml`) runs `clojure -M:test` + `clojure -M:lint` +
 `npm run test:cljs` on every push/PR. It deliberately does NOT run
 `npm run test:live`.
+
+## Consensus: safety and liveness are separate namespaces
+
+`engi.consensus` owns the SAFETY rules — quorum arithmetic (n=3f+1,
+quorum=2f+1), the shape of a quorum certificate, the chained three-chain
+commit rule. Those say what may never happen.
+
+`engi.pacemaker` owns view change, which is what says something must
+eventually happen. A protocol with only safety rules has a trivial
+implementation: never propose anything.
+
+That second half is where home-grown BFT dies. Safety is a handful of
+comparisons, easy to get right and easy to test. Liveness is a timeout, a
+certificate, a lock and an exponential backoff interacting — and the failure
+mode is not a crash but a chain that stops while every replica is
+individually correct.
+
+The pieces, and why each is load-bearing:
+
+- **The lock.** A replica that has seen two consecutive certified descendants
+  of a block is locked on it and must not vote for a branch that drops it.
+  Without this a view change can un-commit a block.
+- **The liveness clause.** It may also vote when a block's justification comes
+  from a LATER view than its lock — a quorum that intersects its own has
+  demonstrably moved on. Without this a replica locked on a losing branch can
+  never vote again.
+- **The timeout certificate.** 2f+1 distinct new-view messages, carrying the
+  highest QC anyone reported. That QC is how the next leader learns what it
+  must extend, and is why a view change cannot drop a committed block.
+- **Exponential backoff.** A fixed timeout under a partition changes view
+  forever and never progresses. It flattens after six doublings, so recovery
+  from a long partition does not take as long again.
+- **Leadership keyed by view, not height.** A view that produced nothing still
+  hands over; otherwise a crashed leader keeps being re-elected.
+
+Everything is a pure function of data — no clock, no sockets, no timers.
+`now` is passed in, which is what lets a whole n-replica view change, including
+a partition and its healing, be simulated as a value in a test.
+
+**Not here yet:** p2p transport, signature aggregation, catch-up sync of
+missing blocks. The pacemaker decides what to do; nothing carries the messages.
