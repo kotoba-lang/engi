@@ -19,14 +19,36 @@
 ;; had, which is what that seam was for — engi does not know what a
 ;; transaction is, and does not learn here.
 ;;
-;; ## What is deliberately NOT proven
+;; ## Consensus says who proposed the block; it does not say who owns the money
 ;;
-;; The transactions are applied unauthenticated. torihiki-node already proved
-;; per-transaction Ed25519 signatures end to end against a live node, and
-;; stacking that here would test the same thing twice while making it harder
-;; to see whether the state agrees. Consensus authenticates who proposed the
-;; BLOCK; whether the account authorised the TRANSACTION is a separate layer,
-;; and this run does not exercise it.
+;; Applying transactions unauthenticated — which this harness did at first —
+;; means a validator can put a transaction in a block on behalf of any
+;; account, and every honest replica applies it, agrees on the result, and
+;; produces a matching state root. Nothing looks wrong: the replicas agree
+;; perfectly about somebody else spending your position.
+;;
+;; So transactions are signed envelopes and torihiki.auth checks them inside
+;; apply-block, where the nonce and the key binding are consensus state rather
+;; than server state. A Byzantine LEADER is in the set for exactly this: w4
+;; injects an order as account 1, signed with its own key, into every block it
+;; proposes.
+;;
+;; ## The thief won the first time, and the run said pass
+;;
+;; torihiki binds an account id to the first public key that authenticates for
+;; it. Under a single sequencer the owner is always first. Under BFT the
+;; Byzantine LEADER proposes blocks, so if the account is unbound it claims
+;; the id — and then the genuine owner is refused :wrong-key on every
+;; transaction, forever, on their own account.
+;;
+;; That is what happened: account 1 ended at -50, exactly the thief's order,
+;; while 34 of the owner's transactions were refused. The run reported PASS,
+;; because it checked that refusals existed and not WHOSE they were.
+;;
+;; Accounts are bound at genesis here, which is what a bridge deposit does in
+;; a real deployment: the thing that creates the account knows the key. The
+;; general fix is an address derived from the key, which torihiki.auth already
+;; names as the right answer and defers until there is an address format.
 (ns torihiki-on-engi
   (:require ["ws" :as ws]
             ["node:crypto" :as nc]
@@ -38,6 +60,7 @@
             [engi.replica :as r]
             [engi.wire :as wire]
             [torihiki.api :as api]
+            [torihiki.auth :as auth]
             [torihiki.book :as bk]
             [torihiki.clearing :as cl]
             [torihiki.state :as st]))
@@ -80,6 +103,15 @@
          :taker-fee-rate 350000
          :maker-fee-rate 100000))
 
+(def trader-keys
+  "One Ed25519 keypair per trading account. Separate from the validator keys:
+  a witness signs blocks and votes, an account authorises spending, and a
+  system where those are the same key is a system where a validator is
+  everybody."
+  (into {} (for [a [1 2 3]] [a (nc/generateKeyPairSync "ed25519")])))
+
+(defn- b64 [buf] (.toString buf "base64"))
+
 (defn genesis-exchange []
   ;; Funded at genesis rather than by :deposit transactions, because with no
   ;; bridge authority configured a deposit is a mint and this run is about
@@ -90,7 +122,39 @@
       (st/apply-tx {:tx :deposit :account 1 :amount 100000000})
       (st/apply-tx {:tx :deposit :account 2 :amount 100000000})
       (st/apply-tx {:tx :deposit :account 3 :amount 100000000})
-      (st/apply-tx {:tx :oracle :market market-id :price 1000})))
+      (st/apply-tx {:tx :oracle :market market-id :price 1000})
+      ;; Bound at genesis, not claimed by first use. See the header: under BFT
+      ;; the Byzantine leader is the one proposing blocks, so first-use
+      ;; binding hands it any account nobody has touched yet.
+      (update :account-keys merge
+              (into {} (for [[a kp] trader-keys]
+                         [a (b64 (.export (.-publicKey kp)
+                                          #js {:format "der" :type "spki"}))])))))
+
+(defn sign-tx
+  "A signed envelope, in the shape torihiki.auth/check expects."
+  [account nonce tx]
+  (let [payload (auth/signing-payload chain-id account nonce tx)
+        sk (.-privateKey (get trader-keys account))]
+    {:tx tx :account account :nonce nonce
+     :pubkey (b64 (.export (.-publicKey (get trader-keys account))
+                           #js {:format "der" :type "spki"}))
+     :sig (b64 (nc/sign nil (js/Buffer.from payload "utf8") sk))}))
+
+(defn tx-verify
+  "`[pubkey payload sig] -> boolean`, the seam torihiki.auth takes.
+
+  The key travels in the envelope and the ACCOUNT binding is consensus state:
+  torihiki.auth binds an account id to the first public key that authenticates
+  for it and refuses any other afterwards, so this only has to answer whether
+  the signature is good for the key presented."
+  [pubkey payload sig]
+  (try
+    (nc/verify nil (js/Buffer.from payload "utf8")
+               (nc/createPublicKey #js {:key (js/Buffer.from pubkey "base64")
+                                        :format "der" :type "spki"})
+               (js/Buffer.from sig "base64"))
+    (catch :default _ false)))
 
 (defn- decode-tx
   "A proposal is a JSON string carrying one transaction.
@@ -102,8 +166,11 @@
   fetch to get it back."
   [s]
   (let [m (js->clj (js/JSON.parse s) :keywordize-keys true)]
-    (cond-> m
-      (string? (:tx m)) (update :tx keyword))))
+    ;; Normalised BEFORE the signing payload is computed, so both sides see
+    ;; :order and (name :order) agrees. Normalising after would give the two
+    ;; sides different payloads and every signature would fail for a reason
+    ;; that looks like cryptography and is not — torihiki-node's own note.
+    (update m :tx (fn [t] (cond-> t (string? (:tx t)) (update :tx keyword))))))
 
 (def machine
   {;; A THUNK, not a value. torihiki's book is a struct of typed arrays, so a
@@ -112,18 +179,39 @@
    ;; agreed on the committed blocks and disagreed about the resting order
    ;; count by two hundred, because they were all writing into one.
    :init-fn genesis-exchange
+   ;; apply-block resets :rejected every block, so a fold over 118 blocks ends
+   ;; holding only the last one's refusals — which reads as "nothing was ever
+   ;; refused" and is how the first run of the theft scenario reported the
+   ;; thief unrefused while the position said otherwise. Accumulated here.
    :apply-fn (fn [ex block]
                ;; The block header IS the clock. Nothing below may read a real
                ;; one, or two replicas applying the same block at different
                ;; wall times would compute different funding and diverge —
                ;; which is torihiki.state's rule, not a new one for this run.
-               (st/apply-block ex {:height (:engi.block/height block)
+               (-> (st/apply-block ex {:height (:engi.block/height block)
                                    :ts (:engi.block/ts block)
                                    :txs (mapv decode-tx
-                                              (:engi.block/proposals block))}))
+                                              (:engi.block/proposals block))}
+                               {:chain-id chain-id :verify-fn tx-verify})
+                   (as-> ex' (update ex' :refused-so-far (fnil into [])
+                                     (map :reason (:rejected ex'))))))
    :root-fn st/state-root})
 
 ;; ── a replica ───────────────────────────────────────────────────────────────
+
+(def account-of
+  "Which trading account submits through which replica.
+
+  One account per replica because nonces are strictly sequential: two replicas
+  submitting for one account would each pick the same next nonce and one of
+  them would be refused, which is correct behaviour and would make this run
+  about nonce contention rather than about agreement."
+  {"w1" 1 "w2" 2 "w3" 3})
+
+(def byzantine
+  "The leader that steals. It has no trading account of its own and injects an
+  order as account 1, signed with its own key, into every block it proposes."
+  "w4")
 
 (defn make-node [w]
   (let [state (atom (r/replica {:witness w
@@ -135,7 +223,8 @@
                                 :verify-fn verify-fn
                                 :machine machine}))
         registry (atom {})
-        out-node (atom nil)]
+        out-node (atom nil)
+        nonce (atom 0)]
     (letfn [(now [] (.getTime (js/Date.)))
             (ship! [outbox]
               (doseq [{:keys [msg]} outbox]
@@ -157,7 +246,29 @@
         {:witness w
          :state state
          :submit! (fn [tx]
-                    (swap! state r/submit (js/JSON.stringify (clj->js tx))))
+                    (when-let [acct (get account-of (wire/wire-id w))]
+                      (let [env (sign-tx acct (swap! nonce inc)
+                                         (assoc tx :account acct))]
+                        (swap! state r/submit
+                               (js/JSON.stringify (clj->js env))))))
+         :steal! (fn []
+                   ;; A block this replica proposes carries an order spending
+                   ;; account 1's collateral, signed by this replica's own
+                   ;; validator key. Unauthenticated, every honest replica
+                   ;; applies it and they all agree on the result — perfect
+                   ;; agreement about somebody else spending your position.
+                   (when (= (wire/wire-id w) byzantine)
+                     (let [tx {:tx :order :account 1 :market market-id
+                               :side 1 :level 900 :qty 50 :flags 0}
+                           payload (auth/signing-payload chain-id 1 1 tx)]
+                       (swap! state r/submit
+                              (js/JSON.stringify
+                               (clj->js {:tx tx :account 1 :nonce 1
+                                         :pubkey (b64 (.export
+                                                       (.-publicKey (get keys-of byzantine))
+                                                       #js {:format "der" :type "spki"}))
+                                         :sig (b64 (nc/sign nil (js/Buffer.from payload "utf8")
+                                                            (.-privateKey (get keys-of byzantine))))}))))))
          :dial! (fn []
                   (reset! out-node
                           (nws/make-node
@@ -191,15 +302,16 @@
   [nodes i]
   (let [[a b c d] nodes
         lvl (+ 990 (mod i 7))]
+    ((:steal! d))
     ;; :account is not optional. Without it api/validate answers :bad-account
     ;; and every transaction is refused — which looks exactly like consensus
     ;; working and nobody trading, because the block still commits and every
     ;; replica still agrees on the empty book. The first run of this harness
     ;; did precisely that and reported four replicas in perfect agreement.
-    ((:submit! a) {:tx :order :account 1 :market market-id :side 0 :level lvl :qty 2 :flags 0})
-    ((:submit! b) {:tx :order :account 2 :market market-id :side 1 :level (+ lvl 3) :qty 2 :flags 0})
-    ((:submit! c) {:tx :order :account 3 :market market-id :side 1 :level lvl :qty 1 :flags 0})
-    ((:submit! d) {:tx :order :account 1 :market market-id :side 0 :level (- lvl 2) :qty 3 :flags 0})))
+    ((:submit! a) {:tx :order :market market-id :side 0 :level lvl :qty 2 :flags 0})
+    ((:submit! b) {:tx :order :market market-id :side 1 :level (+ lvl 3) :qty 2 :flags 0})
+    ((:submit! c) {:tx :order :market market-id :side 1 :level lvl :qty 1 :flags 0})
+    ((:submit! c) {:tx :order :market market-id :side 0 :level (- lvl 2) :qty 3 :flags 0})))
 
 ;; ── report ──────────────────────────────────────────────────────────────────
 
@@ -210,7 +322,7 @@
      :best-ask (bk/best book bk/ask)
      :resting (bk/resting-count book)
      :last (get-in ex [:last market-id])
-     :rejected (count (:rejected ex))
+     :rejected (frequencies (:refused-so-far ex))
      :positions (into (sorted-map)
                       (for [a [1 2 3]]
                         [a (:size (get-in ex [:clearing :accounts a :positions market-id])
@@ -240,6 +352,21 @@
     (println "  common committed blocks:" common)
     (println "  exchange at that block :" (pr-str (first views)))
     (println "  every replica the same :" (apply = views))
+    ;; :wrong-key, not :bad-signature — which is what actually fires and is
+    ;; the better answer. torihiki.auth binds an account id to the first key
+    ;; that authenticates for it, so account 1 is already the trader's, and
+    ;; the thief is refused on the BINDING before any signature is checked.
+    ;; The expectation here said :bad-signature and the engine was right.
+    (let [r (:rejected (first views))
+          refused (+ (get r :wrong-key 0) (get r :bad-signature 0))]
+      (println "  account 1 (only ever buys):" (get (:positions (first views)) 1)
+             (if (neg? (get (:positions (first views)) 1 0))
+               "  <-- SHORT: somebody else sold it"
+               ""))
+    (println "  the thief's order      :"
+               (if (pos? refused)
+                 (str "refused " (pr-str (select-keys r [:wrong-key :bad-signature])))
+                 "NOT REFUSED")))
     (println "")
     (cond
       (zero? common) (do (println "TORIHIKI-ON-ENGI: FAIL — nothing committed") 1)
@@ -247,6 +374,15 @@
       (do (println "TORIHIKI-ON-ENGI: FAIL — no order reached the book") 1)
       (not (apply = views))
       (do (println "TORIHIKI-ON-ENGI: FAIL — same blocks, different exchange") 1)
+      (zero? (+ (get (:rejected (first views)) :wrong-key 0)
+                (get (:rejected (first views)) :bad-signature 0)))
+      (do (println "TORIHIKI-ON-ENGI: FAIL — the Byzantine leader spent account 1") 1)
+      ;; account 1 only ever submits buys, so a short position is somebody
+      ;; else selling on its behalf. Checking that refusals EXISTED was not
+      ;; enough — the first run refused 34 of the owner's own transactions and
+      ;; called that a pass.
+      (neg? (get (:positions (first views)) 1 0))
+      (do (println "TORIHIKI-ON-ENGI: FAIL — account 1 is short and only ever bought") 1)
       :else
       (do (println "TORIHIKI-ON-ENGI: pass — four replicas, one exchange") 0))))
 

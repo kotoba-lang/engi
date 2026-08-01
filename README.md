@@ -142,6 +142,48 @@ No new engine and no new consensus. `torihiki.state` is unchanged and
 `engi.replica` takes it through the machine seam, which is what that seam was
 for: engi does not know what a transaction is and does not learn here.
 
+### Consensus says who proposed the block, not who owns the money
+
+Applying transactions unauthenticated — which this harness did at first —
+means a validator can put a transaction in a block on behalf of any account.
+Every honest replica applies it, agrees on the result, and produces a matching
+state root. **Nothing looks wrong: the replicas agree perfectly about somebody
+else spending your position.**
+
+So transactions are signed envelopes and `torihiki.auth` checks them inside
+`apply-block`, where the nonce and the key binding are consensus state. A
+Byzantine **leader** is in the set for exactly this: w4 injects an order as
+account 1, signed with its own validator key, into every block it proposes.
+
+```
+  exchange at that block : {:root "73f43c42…", :best-bid 994, :best-ask 996,
+                            :resting 68, :rejected {:wrong-key 34},
+                            :positions {1 38, 2 -30, 3 -8}}
+  every replica the same : true
+  account 1 (only ever buys): 38
+  the thief's order      : refused {:wrong-key 34}
+```
+
+#### The thief won the first time, and the run said pass
+
+`torihiki` binds an account id to the **first public key that authenticates
+for it**. Under a single sequencer the owner is always first. Under BFT the
+Byzantine leader is the one proposing blocks, so on an unbound id **it claims
+the account** — and then the genuine owner is refused `:wrong-key` on every
+transaction, forever, on their own account.
+
+That is what happened. Account 1 ended at **-50, exactly the thief's order**,
+while 34 of the owner's transactions were refused. The run reported PASS,
+because it checked that refusals existed and not **whose** they were.
+
+Accounts are bound at genesis now, which is what a bridge deposit does in a
+real deployment: the thing that creates the account knows the key. The general
+fix is an address derived from the key, which `torihiki.auth` already names as
+the right answer and defers until there is an address format.
+
+The assertion that would have caught it is there too — account 1 only ever
+submits buys, so a **short** position is somebody else selling on its behalf.
+
 ### The initial state is produced, not shared
 
 The first run reported four replicas in perfect agreement on an **empty**
