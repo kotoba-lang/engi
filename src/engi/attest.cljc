@@ -106,6 +106,39 @@
           (< (count verified) quorum) :below-quorum
           :else nil)))))
 
+(defn pending-checks
+  "Every `[witness payload sig]` a certificate needs verified.
+
+  Exists because the platform's verifier is ASYNCHRONOUS and
+  `verify-certificate` is not. WebCrypto returns a Promise; making the
+  verification path async would push a transport concern into the consensus
+  rules, which is the trade `torihiki-node` already refused when it verified
+  transaction signatures before applying a block rather than making
+  `apply-block` async.
+
+  So the shape is: ask what needs checking, resolve it however the runtime
+  resolves things, then hand back a lookup. The rules stay synchronous and the
+  asynchrony stays at the edge where it came from."
+  [qc chain-id]
+  (let [sigs (:engi.qc/sigs qc)]
+    (vec (for [w (sort (:engi.qc/witnesses qc #{}))
+               :let [sig (get sigs w)]
+               :when sig]
+           [w (vote-payload chain-id (:engi.qc/view qc 0) (:engi.qc/height qc)
+                            (:engi.qc/block-hash qc) w)
+            sig]))))
+
+(defn lookup-verifier
+  "A `verify-fn` backed by an already-resolved map of
+  `{[witness payload sig] true/false}`.
+
+  Anything absent from the map verifies as FALSE, not as unknown. A verifier
+  that treats 'I was not asked about this' as acceptance is the same defect as
+  a codec that reads a broken certificate as the absence of one — it turns a
+  gap in the caller's bookkeeping into an accepted signature."
+  [resolved]
+  (fn [w payload sig] (true? (get resolved [w payload sig]))))
+
 (defn signed?
   "Does this certificate carry signatures at all? Lets a caller distinguish
   'not verified yet' from 'cannot be verified', which are different problems

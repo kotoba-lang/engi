@@ -146,3 +146,34 @@
                  (signed-qc (mapv #(str "w" %) (range 30)) 4 7))]
       (is (pos? small))
       (is (> large (* 5 small)) "linear in the number of witnesses, as documented"))))
+
+;; ── the asynchronous seam ───────────────────────────────────────────────────
+
+(deftest pending-checks-names-every-signature
+  (let [q (signed-qc)
+        checks (att/pending-checks q chain)]
+    (is (= 3 (count checks)))
+    (is (= ["w1" "w2" "w3"] (mapv first checks)) "sorted, so two callers agree")
+    (testing "and resolving them reproduces a working verifier"
+      (let [resolved (into {} (map (fn [[w p s]] [[w p s] (verify w p s)])) checks)]
+        (is (nil? (att/verify-certificate q chain quorum
+                                          (att/lookup-verifier resolved))))))))
+
+(deftest an-unasked-signature-verifies-as-false
+  (testing "a verifier that treats 'not asked' as acceptance turns a gap in the
+            caller's bookkeeping into an accepted signature"
+    (let [q (signed-qc)
+          partial-resolved (into {} (map (fn [[w p s]] [[w p s] true]))
+                                 (take 2 (att/pending-checks q chain)))]
+      (is (= :bad-signature
+             (att/verify-certificate q chain quorum
+                                     (att/lookup-verifier partial-resolved)))))))
+
+(deftest pending-checks-skips-witnesses-with-no-signature
+  (let [q (update (signed-qc) :engi.qc/sigs dissoc "w3")]
+    (is (= 2 (count (att/pending-checks q chain))))
+    (is (= :missing-signature
+           (att/verify-certificate q chain quorum
+                                   (att/lookup-verifier
+                                    (into {} (map (fn [[w p s]] [[w p s] true]))
+                                          (att/pending-checks q chain))))))))
