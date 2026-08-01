@@ -609,4 +609,37 @@ client saw        : [[:hub :vote]]
 inbound strikes   : 1
 ```
 
-**Not here yet:** signature aggregation.
+## Signatures: `engi.attest`
+
+`engi.consensus/qc` counts DISTINCT WITNESSES, and its docstring says votes
+arrive "already signature-verified by the caller". That contract holds where a
+replica collects votes it received itself. **It cannot hold in the sync path**
+— a certificate inside a block from a stranger was never seen by this replica
+as votes at all.
+
+So `engi.sync` used to accept any segment whose certificates *named*
+quorum-many witnesses. A peer could list three witnesses who never voted and
+hand over a fabricated history that passed every check. The commit rule was
+sound and the thing it was checking was not.
+
+A certificate now carries one signature per witness, over a payload covering
+the chain id, view, height, block hash and witness. `verify-certificate`
+requires a quorum of **verified** signatures — counting names and checking
+signatures separately means a certificate naming five and signing for one
+passes both halves. `engi.sync` takes the verifier optionally, so a replica
+replaying its own already-checked history does not re-verify it.
+
+### What this is not
+
+Aggregation **by concatenation**: one signature per witness, not one per
+certificate. Real aggregation (BLS) needs a pairing-friendly curve, and
+WebCrypto does not have one. Adding a curve implementation would put the most
+security-critical arithmetic in the system into hand-written code, in a
+project whose whole transport argument was that it must run wherever the
+platform already provides what it needs.
+
+The cost is measured rather than hidden — `signature-bytes` exists so the
+linear growth is visible, and a test asserts it. At 100 validators a
+certificate carries 100 signatures. That is a bandwidth problem at a scale
+this system is nowhere near, and it is a bandwidth problem rather than a
+correctness one. When it matters, the fix is a curve, not a shortcut.

@@ -73,7 +73,13 @@
     (cond-> {"block-hash" (:engi.qc/block-hash qc)
              "height" (:engi.qc/height qc)
              "witnesses" (vec (sort (map wire-id (:engi.qc/witnesses qc))))}
-      (:engi.qc/view qc) (assoc "view" (:engi.qc/view qc)))))
+      (:engi.qc/view qc) (assoc "view" (:engi.qc/view qc))
+      ;; signatures travel with the certificate — a certificate that arrives
+      ;; without them cannot be checked by the peer that receives it, which is
+      ;; the whole reason engi.attest exists
+      (seq (:engi.qc/sigs qc))
+      (assoc "sigs" (into {} (map (fn [[w s]] [(wire-id w) (str s)]))
+                          (:engi.qc/sigs qc))))))
 
 (defn- dec-qc [m limits]
   (when (map? m)
@@ -82,12 +88,19 @@
                  (nat? (get m "height"))
                  (vector? ws)
                  (<= (count ws) (:max-witnesses limits))
-                 (every? #(str-ok? % limits) ws))
+                 (every? #(str-ok? % limits) ws)
+                 (let [sg (get m "sigs")]
+                   (or (nil? sg)
+                       (and (map? sg)
+                            (<= (count sg) (:max-witnesses limits))
+                            (every? #(str-ok? % limits) (keys sg))
+                            (every? #(str-ok? % limits) (vals sg))))))
         (cond-> {:engi.qc/block-hash (get m "block-hash")
                  :engi.qc/height (get m "height")
                  :engi.qc/witnesses (set ws)
                  :engi.qc/vote-count (count (set ws))}
-          (nat? (get m "view")) (assoc :engi.qc/view (get m "view")))))))
+          (nat? (get m "view")) (assoc :engi.qc/view (get m "view"))
+          (map? (get m "sigs")) (assoc :engi.qc/sigs (get m "sigs")))))))
 
 (defn- enc-block [b]
   {"height" (:engi.block/height b)

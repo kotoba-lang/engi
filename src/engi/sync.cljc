@@ -22,8 +22,12 @@
   3. Every block is justified by a quorum certificate for ITS OWN PARENT —
      the same `direct-extends?` check `engi.consensus` uses, so sync cannot
      accept a chain the commit rule would reject.
-  4. Every certificate carries a quorum of DISTINCT witnesses. Without
-     distinctness one peer can certify its own fiction.
+  4. Every certificate carries a quorum of DISTINCT witnesses, and — when a
+     verifier is supplied — a quorum that actually SIGNED. Counting names
+     alone was a real hole: a certificate inside a block from a stranger was
+     never seen by this replica as votes, so `engi.consensus/qc`'s
+     \"already verified by the caller\" contract could not hold here, and a
+     peer could list three witnesses who never voted.
   5. The segment is bounded. An unbounded one is a memory attack that needs no
      invalid data at all.
 
@@ -33,11 +37,12 @@
 
   ## What this namespace does not do
 
-  It does not verify signatures — `engi.consensus` does not either, by the
-  same division of labour: certificates arrive already verified, and the
-  verifier is the caller's. It does not fetch anything. It decides what to ask
-  for and what may be believed."
-  (:require [engi.consensus :as c]))
+  It does not fetch anything, and it does not own the crypto: `engi.attest`
+  holds the payload and the check, and the verifier itself is injected — a
+  browser that cannot re-verify a certificate is not a verifier. It decides
+  what to ask for and what may be believed."
+  (:require [engi.consensus :as c]
+            [engi.attest :as att]))
 
 (def default-params
   {;; the most blocks a peer may hand over at once
@@ -73,8 +78,21 @@
 ;; ── what may be believed ────────────────────────────────────────────────────
 
 (defn- quorum-ok?
-  [qc quorum]
-  (>= (count (:engi.qc/witnesses qc #{})) quorum))
+  "Quorum-many witnesses, and — when a verifier is supplied — quorum-many that
+  actually SIGNED.
+
+  Counting names alone was the hole this closes: a certificate inside a block
+  from a stranger was never seen by this replica as votes, so
+  `engi.consensus/qc`'s \"already verified by the caller\" contract could not
+  hold there. A peer could list three witnesses who never voted.
+
+  The verifier is optional so a replica replaying its own already-checked
+  history does not re-verify it — the same distinction `apply-block` draws in
+  torihiki between live application and replay."
+  [qc quorum chain-id verify-fn]
+  (and (>= (count (:engi.qc/witnesses qc #{})) quorum)
+       (or (nil? verify-fn)
+           (nil? (att/verify-certificate qc chain-id quorum verify-fn)))))
 
 (defn validate-segment
   "nil when `blocks` (ascending, contiguous) may be adopted on top of the block
@@ -84,7 +102,9 @@
   segment. Passing it — rather than just its hash — is what lets the first
   block be checked with exactly the same `direct-extends?` every other step
   uses, instead of a special case that could differ."
-  [hash-fn quorum anchor blocks {:keys [max-batch] :as _params}]
+  ([hash-fn quorum anchor blocks params]
+   (validate-segment hash-fn quorum anchor blocks params nil nil))
+  ([hash-fn quorum anchor blocks {:keys [max-batch] :as _params} chain-id verify-fn]
   (cond
     (empty? blocks) :empty-segment
     (> (count blocks) max-batch) :too-large
@@ -101,9 +121,10 @@
         (loop [prev anchor [b & more] blocks]
           (cond
             (nil? b) nil
-            (not (quorum-ok? (:engi.block/justify b) quorum)) :below-quorum
+            (not (quorum-ok? (:engi.block/justify b) quorum chain-id verify-fn))
+            :below-quorum
             (not (c/direct-extends? hash-fn prev b)) :uncertified
-            :else (recur b more)))))))
+            :else (recur b more))))))))
 
 (defn adopt
   "Append a validated segment. Returns the new chain vector.
@@ -122,8 +143,11 @@
   The chain is returned unchanged on any failure — the segment is rejected
   whole. Adopting the valid prefix of a bad segment would let a peer decide
   where the replica's history ends by appending garbage to a good answer."
-  [hash-fn quorum chain segment params]
-  (let [anchor (last chain)]
-    (if-let [reason (validate-segment hash-fn quorum anchor segment params)]
+  ([hash-fn quorum chain segment params]
+   (sync-step hash-fn quorum chain segment params nil nil))
+  ([hash-fn quorum chain segment params chain-id verify-fn]
+   (let [anchor (last chain)]
+    (if-let [reason (validate-segment hash-fn quorum anchor segment params
+                                      chain-id verify-fn)]
       {:chain chain :adopted 0 :reason reason}
-      {:chain (adopt chain segment) :adopted (count segment)})))
+      {:chain (adopt chain segment) :adopted (count segment)}))))
