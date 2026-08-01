@@ -30,7 +30,7 @@
 
 (deftest head-count-falls-to-a-sybil-under-open-admission
   (testing "the reason ADR-2607994000 replaced it"
-    (let [heads (q/head-count (count witness-set))]
+    (let [heads (q/for-set-size (count witness-set))]
       (is (q/met? heads sybils)
           "forty identities holding forty units total satisfy a head count")
       (is (not (q/met? (q/stake-weighted bonds witness-set) sybils))
@@ -55,7 +55,7 @@
 
 (deftest the-pacemaker-takes-a-quorum-predicate
   (let [msgs (mapv #(nv % nil) sybils)]
-    (is (some? (pm/timeout-certificate msgs (q/head-count (count witness-set))))
+    (is (some? (pm/timeout-certificate msgs (q/for-set-size (count witness-set))))
         "head count lets a Sybil force a view change")
     (is (nil? (pm/timeout-certificate msgs (q/stake-weighted bonds witness-set)))
         "stake does not")))
@@ -71,7 +71,7 @@
         qc (att/certify {:engi.qc/block-hash "BH" :engi.qc/height 4
                          :engi.qc/view 7 :engi.qc/witnesses sybils}
                         votes)]
-    (is (nil? (att/verify-certificate qc chain (q/head-count (count witness-set))
+    (is (nil? (att/verify-certificate qc chain (q/for-set-size (count witness-set))
                                       verify))
         "forty real signatures satisfy a head count")
     (is (= :below-quorum
@@ -88,7 +88,7 @@
                :engi.block/proposals [] :engi.block/proposer "w" :engi.block/ts 10
                :engi.block/justify {:engi.qc/block-hash "H0" :engi.qc/height 0
                                     :engi.qc/witnesses sybils}}]
-    (is (nil? (sync/validate-segment h (q/head-count (count witness-set))
+    (is (nil? (sync/validate-segment h (q/for-set-size (count witness-set))
                                      parent [child] sync/default-params)))
     (is (= :below-quorum
            (sync/validate-segment h (q/stake-weighted bonds witness-set)

@@ -12,6 +12,7 @@
   Both must print the same digest."
   (:require [engi.consensus :as c]
             [engi.pacemaker :as pm]
+            [engi.quorum :as q]
             [engi.sync :as sync]
             [engi.wire :as w]))
 
@@ -45,7 +46,22 @@
         ;; the wire, through an actual encode/decode, so parity covers it too
         wire-msg {:type :new-view :witness :w1 :view 9 :high-qc real-qc}
         [back _] (w/decode (w/encode wire-msg))
+        ;; The quorum rule itself, because it is the part where a runtime
+        ;; difference is a security difference rather than a wrong number:
+        ;; integer division and `count` over a set are exactly the places JVM
+        ;; and JS have disagreed before.
+        holders (into {} (map (fn [i] [(str "holder-" i) {:amount 4000}]))
+                      (range 4))
+        sybil (into {} (map (fn [i] [(str "dust-" i) {:amount 1}])) (range 40))
+        bonds (merge holders sybil)
+        wset (set (keys bonds))
+        stake-q (q/stake-weighted bonds wset)
+        sybil-set (set (keys sybil))
         digest (str "commits=" (count commits)
+                    ";qsizes=" (mapv c/quorum-size (range 1 13))
+                    ";sybil-heads=" (q/met? (q/for-set-size (count wset)) sybil-set)
+                    ";sybil-stake=" (q/met? stake-q sybil-set)
+                    ";honest-stake=" (q/met? stake-q (set (keys holders)))
                     ";locked=" (pm/qc-view (:locked-qc st))
                     ";tcview=" (:engi.tc/view tc)
                     ";entered=" (:view entered)

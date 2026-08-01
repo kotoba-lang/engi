@@ -643,6 +643,39 @@ and the same pair of answers from the pacemaker's timeout certificate, from
 `engi.sync`, and from `engi.attest` — because they all ask the same predicate
 now.
 
+### The quorum was safe on the sizes it was written for, and not on the others
+
+`quorum-size` was 2f+1, and its docstring stated the lemma the whole protocol
+rests on: any two quorums share at least one honest witness, so two
+conflicting certificates at one height cannot both form.
+
+2f+1 has that property on n=3f+1. `qc` never required n to be 3f+1 — it is
+whatever the caller passes. Off that grid the formula keeps looking like a
+supermajority and stops being one:
+
+```
+n=5  f=1   2f+1 = 3   {a b c} and {c d e} share ONE witness, which may be the faulty one
+n=6  f=1   2f+1 = 3   {a b c} and {d e f} share NONE
+```
+
+Two disjoint quorums are two conflicting certificates at the same height —
+the exact outcome the docstring said was impossible.
+
+The threshold is now the smallest one that actually has the property, which
+is `ceil((n+f+1)/2)`. On n=3f+1 that is 2f+1 **identically**, so no threshold
+this system uses moved; it is 4 rather than 3 at n=5 and n=6. Both directions
+are asserted for every n up to 200: safe, and not one vote larger than it has
+to be, since an unnecessarily high threshold costs liveness.
+
+### Two integers a line apart meant different things
+
+`(head-count 4)` required three votes. `(->predicate 4)` required four. Same
+namespace, adjacent, and the file existed to stop a number from meaning two
+things in different places.
+
+They are `for-set-size` (takes n) and `at-least` (takes the threshold) now,
+named so the call site says which.
+
 ## Signatures: `engi.attest`
 
 `engi.consensus/qc` counts DISTINCT WITNESSES, and its docstring says votes

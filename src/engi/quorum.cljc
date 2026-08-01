@@ -22,22 +22,43 @@
   ## A bare number still works, and means head count
 
   Passing an integer is accepted and read as 'at least this many distinct
-  witnesses'. That keeps a managed validator set — where the operator fixes n
-  and head-counting IS safe — expressible without ceremony. It is the wrong
-  default under permissionless admission, which is why `head-count` says so in
-  its own docstring rather than leaving the reader to find the ADR."
+  witnesses' — a THRESHOLD, which is what `at-least` builds. `for-set-size`
+  takes n instead and derives the threshold from it, and the two are named
+  apart because they were not: `(head-count 4)` required three votes while
+  `(->predicate 4)` required four, one line apart in the file written to stop
+  a number from meaning two things.
+
+  Head counting is the wrong default under permissionless admission, which is
+  why `for-set-size` says so in its own docstring rather than leaving the
+  reader to find the ADR."
   (:require [engi.consensus :as c]
             [engi.stake :as stake]))
 
-(defn head-count
-  "Quorum by number of distinct witnesses: 2f+1 out of n=3f+1.
+(defn at-least
+  "Quorum at a THRESHOLD: this many distinct witnesses, or more.
+
+  Takes the number of votes required, not the size of the validator set."
+  [threshold]
+  (fn [witnesses] (>= (count witnesses) threshold)))
+
+(defn for-set-size
+  "Head-count quorum for a validator set of `n`: `engi.consensus/quorum-size`
+  votes, the smallest number that guarantees two quorums share an honest
+  witness.
+
+  Takes n, the size of the SET — not the threshold. `at-least` takes the
+  threshold. The distinction is in the names because it was not, and the two
+  read identically at a call site: `(head-count 4)` required three votes
+  while `(->predicate 4)` required four, one line apart in this namespace, in
+  the file written to end exactly that kind of local disagreement about what
+  a number means.
 
   Safe ONLY where the validator set is managed — where somebody fixes n and
   admission is not open. Under permissionless admission this is exactly the
   rule a Sybil defeats, by splitting a small bond across many identities to
   buy votes it did not pay for."
   [n]
-  (fn [witnesses] (>= (count witnesses) (c/quorum-size n))))
+  (at-least (c/quorum-size n)))
 
 (defn stake-weighted
   "Quorum by bonded stake: more than 2/3 of the epoch's total bond.
@@ -51,13 +72,17 @@
   "Coerce `q` to a quorum predicate. An integer means head count; a function
   is used as-is.
 
+  An integer is a THRESHOLD — `at-least` — and not a set size. Use
+  `for-set-size` when you have n; the difference is three votes versus four
+  on the same numeral.
+
   Exists so every consumer takes 'a quorum' rather than each deciding what a
   number means — the drift this namespace was written to end started as
   exactly that kind of local decision."
   [q]
   (cond
     (fn? q) q
-    (integer? q) (fn [witnesses] (>= (count witnesses) q))
+    (integer? q) (at-least q)
     :else (throw (ex-info "engi.quorum: not a quorum" {:q q}))))
 
 (defn met?

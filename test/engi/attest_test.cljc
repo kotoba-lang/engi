@@ -71,8 +71,10 @@
       (is (nil? (att/verify-certificate q chain 3 verify)))
       (is (= :below-quorum (att/verify-certificate q chain 4 verify))
           "three verified signatures do not satisfy a quorum of four")))
-  (testing "and quorum-size is always odd, so a quorum of two is unreachable"
-    (is (= [1 3 3 3 5] (mapv c/quorum-size [1 4 5 6 7])))))
+  (testing "and off the 3f+1 grid the threshold is no longer 2f+1: it used to be
+            [1 3 3 3 5] for n=[1 4 5 6 7], and at n=6 a quorum of 3 out of 6 can
+            be met twice over by disjoint sets"
+    (is (= [1 3 4 4 5] (mapv c/quorum-size [1 4 5 6 7])))))
 
 ;; ── the sync path, which is where it mattered ───────────────────────────────
 

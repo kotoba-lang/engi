@@ -19,6 +19,36 @@
     (is (= 0 (consensus/byzantine-tolerance 1)))
     (is (= 1 (consensus/quorum-size 1)))))
 
+(deftest on-3f+1-the-quorum-is-still-exactly-2f+1
+  (testing "generalising the rule must not move any threshold this system uses"
+    (doseq [f (range 0 12)]
+      (let [n (inc (* 3 f))]
+        (is (= (inc (* 2 f)) (consensus/quorum-size n))
+            (str "n=" n " must stay at 2f+1"))))))
+
+(deftest two-quorums-always-share-an-honest-witness
+  (testing "the safety lemma, asserted as the property rather than as one
+            formula's outputs — 2f+1 has it only on n=3f+1, and n was never
+            required to be 3f+1. At n=6 it gave 3, and {a b c} and {d e f} are
+            two disjoint quorums, which is two conflicting certificates at one
+            height."
+    (doseq [n (range 1 200)]
+      (let [q (consensus/quorum-size n)
+            f (consensus/byzantine-tolerance n)]
+        (is (> (- (* 2 q) n) f)
+            (str "n=" n ": two quorums of " q " share at most "
+                 (- (* 2 q) n) " witnesses, and " f " of them may be faulty"))
+        (is (<= q n) (str "n=" n ": a quorum larger than the set is unreachable"))))))
+
+(deftest the-quorum-is-the-smallest-safe-one
+  (testing "a threshold higher than necessary costs liveness, so being safe is
+            not on its own enough"
+    (doseq [n (range 1 200)]
+      (let [q (consensus/quorum-size n)
+            f (consensus/byzantine-tolerance n)]
+        (is (not (> (- (* 2 (dec q)) n) f))
+            (str "n=" n ": " (dec q) " would have been safe too"))))))
+
 ;; ── QC formation ─────────────────────────────────────────────────────────────
 
 (deftest qc-forms-once-distinct-witnesses-reach-quorum

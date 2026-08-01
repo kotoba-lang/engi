@@ -24,14 +24,37 @@
 ;; ── quorum arithmetic ───────────────────────────────────────────────────────
 
 (defn quorum-size
-  "n = 3f+1 witnesses tolerate f Byzantine. Quorum = 2f+1 (a majority of the
-  honest supermajority: any two quorums of this size out of n intersect in
-  at least f+1 nodes, i.e. at least one honest node — the safety lemma
-  chained HotStuff and PBFT both rely on). f is derived from n, never
-  passed separately, so a caller can't supply an inconsistent (n, f) pair."
+  "The smallest quorum that is SAFE for `n` witnesses: any two quorums
+  intersect in more than f nodes, so at least one HONEST witness is in both.
+  That intersection is the safety lemma chained HotStuff and PBFT rest on —
+  it is what makes two conflicting certificates at one height impossible.
+
+  f is derived from n, never passed separately, so a caller cannot supply an
+  inconsistent (n, f) pair.
+
+  ## Why this is not just 2f+1
+
+  It was, and 2f+1 is right for the sizes this system was written against:
+  on n = 3f+1 the two formulas are IDENTICAL, since
+  ceil((3f+1 + f+1)/2) = ceil((4f+2)/2) = 2f+1. Every existing threshold is
+  unchanged.
+
+  But n is whatever the caller passes, and `qc` never required it to be
+  3f+1. Off that grid 2f+1 quietly stops being safe while still looking like
+  a supermajority:
+
+      n=5  f=1   2f+1 = 3   {a b c} and {c d e} share ONE node
+      n=6  f=1   2f+1 = 3   {a b c} and {d e f} share NONE
+
+  Two disjoint quorums are two conflicting certificates at the same height —
+  the exact outcome the docstring above claims cannot happen. So the rule is
+  stated as the property it must have rather than as an arithmetic shortcut
+  that happens to have it on a subset of inputs.
+
+      n=5 -> 4    n=6 -> 4    n=4 -> 3    n=7 -> 5    n=10 -> 7"
   [n]
   (let [f (quot (dec n) 3)]
-    (inc (* 2 f))))
+    (quot (+ n f 2) 2)))
 
 (defn byzantine-tolerance
   "f for a given n (n=3f+1). Convenience inverse of quorum-size's derivation,
