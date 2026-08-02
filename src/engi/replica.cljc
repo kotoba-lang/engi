@@ -525,7 +525,16 @@
     (if (and (q/met? (:quorum state) (set (map :engi.vote/witness votes)))
              (not (get-in state [:qcs block-hash])))
       (let [cert (some-> (c/qc (vec votes) (count (:witnesses state)) view)
-                         (att/certify votes))]
+                         (att/certify votes)
+                         ;; Where a certificate was made. Two paths put one
+                         ;; into `:qcs` and they are indistinguishable
+                         ;; afterwards, which is why a certificate arriving
+                         ;; without per-witness views could not be traced to
+                         ;; the place that built it. Not part of the
+                         ;; certificate proper — `engi.wire` does not carry
+                         ;; it, so it says where THIS replica got it, which
+                         ;; is the question being asked.
+                         (assoc :engi.qc/origin :fold-vote))]
         (if cert
           (let [state (-> state
                           (assoc-in [:qcs block-hash] cert)
@@ -866,7 +875,8 @@
             (let [s (-> s (remember-block b) (extend-chain b))
                   j (:engi.block/justify b)]
               (cond-> (update s :voted conj (:engi.block/height b))
-                j (-> (assoc-in [:qcs (:engi.qc/block-hash j)] j)
+                j (-> (assoc-in [:qcs (:engi.qc/block-hash j)]
+                                (assoc j :engi.qc/origin :replay))
                       (update :pm pm/on-qc j)))))
           state
           (sort-by :engi.block/height blocks)))
@@ -897,6 +907,18 @@
   [state verify-sig-fn]
   (vec (filter #(stake/verify-equivocation-evidence % verify-sig-fn)
                (:equivocations state))))
+
+(defn tip-certificate
+  "The certificate this replica holds for its own tip, if any, with the origin
+  tag that says which path produced it."
+  [state]
+  (let [h ((:hash-fn state) (tip state))]
+    (when-let [q (get (:qcs state) h)]
+      {:origin (:engi.qc/origin q)
+       :view (:engi.qc/view q)
+       :witnesses (count (:engi.qc/witnesses q #{}))
+       :sigs (count (:engi.qc/sigs q))
+       :views (:engi.qc/views q)})))
 
 (defn state-root
   "What this replica has actually agreed to, or nil when it runs no machine.
