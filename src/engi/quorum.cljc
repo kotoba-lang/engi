@@ -85,6 +85,23 @@
     (integer? q) (at-least q)
     :else (throw (ex-info "engi.quorum: not a quorum" {:q q}))))
 
+(defn one-honest
+  "The smallest number of DISTINCT witnesses that must contain at least one
+  honest one: f+1, where n = 3f+1.
+
+  Different from a quorum and used for a different job. A quorum decides what
+  is agreed; this decides what is BELIEVABLE — if f+1 witnesses say they have
+  moved on, at least one of them is honest and really has, so following them
+  cannot be a lie told by the faulty alone.
+
+  Head count only. The stake-weighted analogue is more than one third of the
+  bonded total, and it is not implemented: under permissionless admission a
+  Sybil defeats this the same way it defeats a head-counted quorum, so a
+  deployment with open admission must not rely on it. Stated rather than
+  silently inherited from `head-count`."
+  [n]
+  (inc (c/byzantine-tolerance n)))
+
 (defn met?
   [q witnesses]
   (boolean ((->predicate q) witnesses)))

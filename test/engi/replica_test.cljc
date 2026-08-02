@@ -818,3 +818,48 @@
       (is (= 0 (r/height s')) "and did not adopt")
       (is (contains? (:by-hash s') (hash-fn (:block proposal)))
           "but kept it, because a later proposal may need it as a parent"))))
+
+;; ── views have to converge ──────────────────────────────────────────────────
+
+(deftest a-replica-jumps-when-f-plus-one-are-ahead
+  (testing "replicas time out independently so their views drift — 16, 16, 21
+            and 51 on the deployed chain — and a timeout certificate only
+            bundles new-views that share a view. Once drifted, nothing brings
+            them back, and the safety rule then deadlocks the chain: a replica
+            locked in a late view will not vote for a block justified in an
+            early one, correctly, and three replicas sat two votes short."
+    (let [s (checked-replica :w1)
+          [s1 _] (r/on-message s (nv :w2 9 nil) 1000)]
+      (is (= 0 (:view (:pm s1))) "one witness is not evidence")
+      (let [[s2 _] (r/on-message s1 (nv :w3 9 nil) 1001)]
+        (is (= 9 (:view (:pm s2)))
+            "f+1 of four is two, and two honest-or-not witnesses contain one honest")))))
+
+(deftest one-byzantine-replica-moves-nobody
+  (testing "f+1 rather than a quorum because the job is different: a quorum
+            decides what is agreed, this decides what is BELIEVABLE"
+    (let [s (checked-replica :w1)
+          [s1 _] (r/on-message s (nv :w2 9000 nil) 1000)]
+      (is (= 0 (:view (:pm s1)))))))
+
+(deftest a-replica-at-a-later-view-counts-for-the-earlier-one
+  (testing "a replica at view 51 has also passed 21, so it counts toward 21 —
+            and requiring it to say 21 again would make convergence depend on
+            everybody timing out at the same moment, which is exactly what is
+            not happening.
+
+            The destination is 21 and not 51, which is the rule working: only
+            one witness is at 51, and following one witness is what f+1
+            exists to prevent. This expectation said 51 and the code was
+            right."
+    (let [s (checked-replica :w1)
+          [s1 _] (r/on-message s (nv :w2 21 nil) 1000)
+          [s2 _] (r/on-message s1 (nv :w3 51 nil) 1001)]
+      (is (= 21 (:view (:pm s2)))
+          "the highest view f+1 witnesses are at OR PAST"))))
+
+(deftest converging-does-not-move-a-replica-backwards
+  (let [s (assoc-in (checked-replica :w1) [:pm :view] 30)
+        [s1 _] (r/on-message s (nv :w2 5 nil) 1000)
+        [s2 _] (r/on-message s1 (nv :w3 5 nil) 1001)]
+    (is (= 30 (:view (:pm s2))))))

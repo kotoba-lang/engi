@@ -103,6 +103,24 @@
   called. A peer could hand over an unbounded segment whose certificates named
   witnesses who never voted, and it would be adopted as history.
 
+  ## Views have to converge, or the safety rule deadlocks the chain
+
+  Replicas time out independently, so their views drift — 16, 16, 21 and 51 on
+  a deployed chain — and `pm/timeout-certificate` only bundles new-views that
+  share a view. Once they have drifted, no certificate can form and nothing
+  brings them back.
+
+  That is not merely a liveness nuisance. Locks carry the view they were
+  formed in, and `safe-to-vote?` compares them: a replica locked in view 51
+  will not vote for a block justified in view 16, correctly, and the chain
+  stops with three replicas holding a block two votes short of quorum.
+
+  So a replica jumps when f+1 distinct witnesses report being at or past a
+  higher view. f+1 rather than a quorum because the job is different: a quorum
+  decides what is agreed, this decides what is BELIEVABLE, and f+1 contains at
+  least one honest replica that really is there. One Byzantine replica
+  claiming view nine thousand moves nobody.
+
   ## And a new-view nobody signed is worse than an unsigned vote
 
   A timeout certificate is folded out of the high QCs carried by new-view
@@ -532,6 +550,38 @@
       [state []]
       (cast-vote state b now))))
 
+(defn- sync-view
+  "Jump to a higher view when f+1 distinct witnesses are at or past it.
+
+  Without this the views drift apart and never come back, because a timeout
+  certificate needs new-views that agree on a view and drifted replicas never
+  produce any. The deployed chain reached 16, 16, 21 and 51.
+
+  Counted across ALL views at or above the candidate, not just messages naming
+  it exactly: a replica at view 51 has also passed 21, and requiring it to say
+  so again would make convergence depend on everybody timing out at the same
+  moment, which is the thing that is not happening."
+  [state now]
+  (let [n (count (:witnesses state))
+        threshold (q/one-honest n)
+        mine (:view (:pm state))
+        nvs (:new-views state)
+        best (->> (keys nvs)
+                  (filter #(> % mine))
+                  (sort >)
+                  (some (fn [v]
+                          (let [ws (into #{} (mapcat (fn [[vv m]]
+                                                       (when (>= vv v) (keys m)))
+                                                     nvs))]
+                            (when (>= (count ws) threshold) v)))))]
+    (if best
+      (-> state
+          (assoc-in [:pm :view] best)
+          (assoc-in [:pm :failures] 0)
+          (assoc-in [:pm :deadline]
+                    (+ now (pm/timeout-for 0 (:params state)))))
+      state)))
+
 (defn- handle-new-view
   [state {:keys [witness view high-qc sig]} now]
   (let [witness (wire/wire-id witness)
@@ -592,7 +642,8 @@
           (let [state (update state :pm pm/on-timeout-certificate tc now (:params state))
                 [state out] (propose state now)]
             [state (into (vec ask) out)])
-          [state (vec ask)])))))
+          (let [state (sync-view state now)]
+            [state (vec ask)]))))))
 
 (defn- handle-sync-request
   "Answer with at most `:max-batch` blocks.
