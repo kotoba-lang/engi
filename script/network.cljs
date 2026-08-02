@@ -293,6 +293,31 @@
                                                               "w4" "z"}}})]}))
            (send! sock {:type :sync-request :from 0 :to 999999})))))))
 
+;; ── the replica that joins late ─────────────────────────────────────────────
+;;
+;; The deployed chain stops with three replicas at one height and a fourth a
+;; block behind that never rejoins, so the three have exactly quorum and no
+;; margin. Reproducing that here costs six seconds; reproducing it on
+;; Cloudflare costs a deploy, an eviction wait and a five-minute observation,
+;; and this file can be run fifty times in the time that takes.
+;;
+;; `catch-up!` wipes one replica back to genesis mid-run, which is what
+;; /reset does to a deployed one.
+
+(defn catch-up-test! [nodes]
+  (let [victim (nth nodes 2)]
+    (println "")
+    (println "  wiping" (name (:witness victim)) "back to genesis")
+    (reset! (:state victim)
+            (r/replica {:witness (:witness victim)
+                        :witnesses witnesses
+                        :quorum (c/quorum-size (count witnesses))
+                        :hash-fn hash-fn
+                        :chain-id chain-id
+                        :sign-fn (sign-as (:witness victim))
+                        :verify-fn verify-fn
+                        :machine machine}))))
+
 ;; ── run ─────────────────────────────────────────────────────────────────────
 
 (defn- report [nodes]
@@ -312,7 +337,16 @@
       (println "        certificates" (count (:qcs s))
                " voted at heights 1.." (apply max 0 (:voted s))
                " chain length" (count (:chain s)))))
-  (let [chains (map (fn [n] (mapv hash-fn (:committed @(:state n)))) nodes)
+  (let [victim (nth nodes 2)
+        _ (let [v @(:state victim)]
+            (println "  wiped replica" (name (:witness victim))
+                     "came back to height" (r/height v)
+                     "committed" (r/committed-height v))
+            (println "    last-proposal:" (pr-str (:last-proposal v)))
+            (println "    last-sync    :" (pr-str (dissoc (:last-sync v) :detail)))
+            (println "    sync detail  :" (pr-str (:detail (:last-sync v))))
+            (println "    dropped votes:" (pr-str (:dropped-votes v))))
+        chains (map (fn [n] (mapv hash-fn (:committed @(:state n)))) nodes)
         shortest (apply min (map count chains))
         agree? (apply = (map #(take shortest %) chains))
         progressed? (pos? shortest)
@@ -402,6 +436,7 @@
        (doseq [n nodes] ((:start! n)))
        (forge!)
        (let [iv (js/setInterval (fn [] (doseq [n nodes] ((:tick! n)))) 120)]
+         (js/setTimeout (fn [] (catch-up-test! nodes)) 2500)
          (js/setTimeout
           (fn []
             (js/clearInterval iv)

@@ -80,13 +80,17 @@
         "and buy no stake — which is the whole point")))
 
 (deftest sync-takes-a-quorum-predicate
+  ;; Above genesis. A certificate for height zero is exempt in engi.sync — the
+  ;; one engi.replica/start fabricates has a single witness and no signatures,
+  ;; and every replica has genesis by construction — so a segment justified at
+  ;; height zero would be testing the exemption rather than the predicate.
   (let [h (fn [b] (str "H" (:engi.block/height b)))
-        parent {:engi.block/height 0 :engi.block/parent-hash "genesis"
-                :engi.block/proposals [] :engi.block/proposer "w" :engi.block/ts 0
+        parent {:engi.block/height 1 :engi.block/parent-hash "H0"
+                :engi.block/proposals [] :engi.block/proposer "w" :engi.block/ts 10
                 :engi.block/justify nil}
-        child {:engi.block/height 1 :engi.block/parent-hash "H0"
-               :engi.block/proposals [] :engi.block/proposer "w" :engi.block/ts 10
-               :engi.block/justify {:engi.qc/block-hash "H0" :engi.qc/height 0
+        child {:engi.block/height 2 :engi.block/parent-hash "H1"
+               :engi.block/proposals [] :engi.block/proposer "w" :engi.block/ts 20
+               :engi.block/justify {:engi.qc/block-hash "H1" :engi.qc/height 1
                                     :engi.qc/witnesses sybils}}]
     (is (nil? (sync/validate-segment h (q/for-set-size (count witness-set))
                                      parent [child] sync/default-params)))

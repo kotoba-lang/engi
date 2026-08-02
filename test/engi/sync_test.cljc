@@ -154,3 +154,42 @@
       (is (= 5 (:adopted r)))
       (is (seq (c/three-chain-commits h (:chain r)))
           "the same three-chain rule finds commits in what sync accepted"))))
+
+;; ── genesis is exempt, and nothing above it is ──────────────────────────────
+
+(deftest a-segment-starting-at-height-one-is-not-refused-for-its-genesis-justify
+  (testing "the first block of any history is justified by the certificate
+            engi.replica/start fabricates — one witness, no signatures,
+            because nobody voted for genesis. Refusing it refused the segment
+            WHOLE, so a replica that had fallen behind could never adopt
+            anything: one deployed validator sat at genesis while the others
+            reached forty-five, and the three that remained had exactly quorum
+            with no margin."
+    (let [h (fn [b] (str "H" (:engi.block/height b)))
+          genesis {:engi.block/height 0 :engi.block/parent-hash "genesis"
+                   :engi.block/proposals [] :engi.block/proposer :w1
+                   :engi.block/ts 0 :engi.block/justify nil}
+          boot {:engi.qc/block-hash "H0" :engi.qc/height 0 :engi.qc/view 0
+                :engi.qc/witnesses #{:w1} :engi.qc/vote-count 1}
+          b1 {:engi.block/height 1 :engi.block/parent-hash "H0"
+              :engi.block/proposals [] :engi.block/proposer :w1
+              :engi.block/ts 10 :engi.block/justify boot}]
+      (is (nil? (sync/validate-segment h 3 genesis [b1] params))
+          "one witness and no signatures, and it is genesis"))))
+
+(deftest a-certificate-above-genesis-still-needs-its-quorum
+  (testing "the exception is height zero and nothing else"
+    (let [h (fn [b] (str "H" (:engi.block/height b)))
+          b1 {:engi.block/height 1 :engi.block/parent-hash "H0"
+              :engi.block/proposals [] :engi.block/proposer :w1
+              :engi.block/ts 10
+              :engi.block/justify {:engi.qc/block-hash "H0" :engi.qc/height 0
+                                   :engi.qc/view 0 :engi.qc/witnesses #{:w1}
+                                   :engi.qc/vote-count 1}}
+          b2 {:engi.block/height 2 :engi.block/parent-hash "H1"
+              :engi.block/proposals [] :engi.block/proposer :w1
+              :engi.block/ts 20
+              :engi.block/justify {:engi.qc/block-hash "H1" :engi.qc/height 1
+                                   :engi.qc/view 1 :engi.qc/witnesses #{:w1}
+                                   :engi.qc/vote-count 1}}]
+      (is (= :below-quorum (sync/validate-segment h 3 b1 [b2] params))))))

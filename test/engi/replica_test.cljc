@@ -387,12 +387,20 @@
 (deftest a-segment-whose-certificates-do-not-verify-is-refused-whole
   (testing "engi.sync says a peer must not get to choose where this replica's
             history ends by appending garbage to a good answer — which is the
-            reason to call it rather than re-implement a weaker version"
+            reason to call it rather than re-implement a weaker version.
+
+            Checked ABOVE genesis. A certificate for height zero is exempt,
+            because the one engi.replica/start fabricates has a single witness
+            and no signatures and every replica has genesis by construction —
+            so a test that used a height-zero certificate as its example of a
+            bad one was testing the exemption, not the rule."
     (let [s (checked-replica :w1)
-          bad (certified-child (r/tip s) 1 false)
-          [s' out] (r/on-message s {:type :sync-response :blocks [bad]} 1000)]
-      (is (= 0 (r/height s')) "adopted a block certified by nobody")
-      (is (empty? out)))))
+          good (certified-child (r/tip s) 1 true)
+          [s1 _] (r/on-message s {:type :sync-response :blocks [good]} 1000)
+          bad (certified-child (r/tip s1) 2 false)
+          [s' out] (r/on-message s1 {:type :sync-response :blocks [bad]} 1001)]
+      (is (= 1 (r/height s')) "adopted a block certified by nobody")
+      (is (empty? (filter #(= :sync-response (:type (:msg %))) out))))))
 
 (deftest a-genuine-segment-is-adopted
   (testing "otherwise the refusal above is a check that refuses everything"

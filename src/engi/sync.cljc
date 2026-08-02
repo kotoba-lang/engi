@@ -91,9 +91,26 @@
   history does not re-verify it — the same distinction `apply-block` draws in
   torihiki between live application and replay."
   [qc quorum chain-id verify-fn]
-  (and (q/met? quorum (:engi.qc/witnesses qc #{}))
-       (or (nil? verify-fn)
-           (nil? (att/verify-certificate qc chain-id quorum verify-fn)))))
+  (or
+   ;; Genesis is exempt. The first block of any history is justified by the
+   ;; certificate `engi.replica/start` fabricates so that a first proposal has
+   ;; something to point at — one witness, no signatures, because nobody voted
+   ;; for genesis: every replica has it by construction.
+   ;;
+   ;; Refusing it refused the whole segment, and a segment is refused WHOLE by
+   ;; design — so a replica that had fallen behind could never adopt anything
+   ;; at all. On the deployed chain one validator sat at genesis while the
+   ;; others reached forty-five, and the three that remained had exactly
+   ;; quorum with no margin, which is the fault-tolerance gap. The two were
+   ;; the same wound: no margin because one is stuck, stuck because the
+   ;; segment that would free it starts at height one.
+   ;;
+   ;; `engi.replica/handle-new-view` already made this exception for the same
+   ;; certificate. This is the other place that needed it.
+   (zero? (:engi.qc/height qc -1))
+   (and (q/met? quorum (:engi.qc/witnesses qc #{}))
+        (or (nil? verify-fn)
+            (nil? (att/verify-certificate qc chain-id quorum verify-fn))))))
 
 (defn validate-segment
   "nil when `blocks` (ascending, contiguous) may be adopted on top of the block
