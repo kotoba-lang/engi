@@ -406,8 +406,20 @@
                                    (assoc :sig (:engi.vote/sig mine)))}]
                  [])])
 
+      ;; Refused, and NOT adopted.
+      ;;
+      ;; This adopted the block and declined to vote for it, which puts the
+      ;; replica on a chain it will not support: the block is its tip, nothing
+      ;; can certify it because its own vote is missing, and every later
+      ;; proposal extends something it never agreed to. Three deployed
+      ;; validators sat at a tip with zero votes recorded for it — not even
+      ;; their own — while receiving three thousand proposals each.
+      ;;
+      ;; A replica's chain is what it voted for. Keeping the block in
+      ;; `:by-hash` is right, because a later proposal may need it as a
+      ;; parent to check against; making it the tip is not.
       (not (pm/safe-to-vote? (:pm state) block #(ancestor? state %1 %2)))
-      [(extend-chain state block) []]
+      [state []]
 
       :else
       (cast-vote (extend-chain state block) block now))))

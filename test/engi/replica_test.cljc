@@ -797,3 +797,24 @@
           [s1 _] (r/on-message s {:type :sync-response :blocks [good]} 1000)
           [_ out] (r/on-message s1 {:type :sync-response :blocks [good]} 1001)]
       (is (empty? (filter #(= :vote (:type (:msg %))) out))))))
+
+(deftest a-block-this-replica-will-not-vote-for-is-not-adopted
+  (testing "adopting it puts the replica on a chain it will not support: the
+            block is its tip, nothing can certify it because its own vote is
+            missing, and every later proposal extends something it never
+            agreed to. Three deployed validators sat at a tip with zero votes
+            recorded for it — not even their own — while receiving three
+            thousand proposals each."
+    (let [;; locked on a block that is not an ancestor of what arrives
+          locked {:engi.qc/block-hash "h:elsewhere" :engi.qc/height 1
+                  :engi.qc/view 9 :engi.qc/witnesses #{"w2" "w3" "w4"}
+                  :engi.qc/vote-count 3}
+          s (assoc-in (get (net) :w2) [:pm :locked-qc] locked)
+          leader (c/leader-for witnesses 1)
+          [_ out] (r/start (get (net) leader) 1000)
+          proposal (:msg (first out))
+          [s' o] (r/on-message s proposal 1001)]
+      (is (empty? (filter #(= :vote (:type (:msg %))) o)) "did not vote")
+      (is (= 0 (r/height s')) "and did not adopt")
+      (is (contains? (:by-hash s') (hash-fn (:block proposal)))
+          "but kept it, because a later proposal may need it as a parent"))))
