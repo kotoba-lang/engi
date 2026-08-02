@@ -40,6 +40,29 @@
             [engi.wire :as wire]))
 
 (def witnesses [:w1 :w2 :w3 :w4])
+
+(def delivery-delay
+  "Milliseconds to hold a batch before delivering it, modelling an HTTP round
+  trip between Durable Objects. `NET_DELAY=20 nbb ...` to set it.
+
+  The sockets underneath are real and sub-millisecond, which is nothing like a
+  request that has to be queued, dispatched to an isolate, handled while that
+  isolate is busy with the last one, and answered. Eviction and
+  transport-side signing were modelled first and neither changed the outcome;
+  this is the last structural difference between here and the deployment.
+
+  It reproduces the deployed stall, and the threshold is brutally low:
+
+      NET_DELAY=  0   94 committed blocks
+      NET_DELAY=  5   21
+      NET_DELAY= 20    0
+      NET_DELAY= 60    0
+
+  An HTTP round trip between Durable Objects is tens of milliseconds at best,
+  so the deployment has never been anywhere near the range this implementation
+  survives. Zero is not a realistic setting for anything; it is the setting
+  under which the harness has been passing all along."
+  (js/parseInt (or (some-> js/process .-env .-NET_DELAY) "0") 10))
 (def chain-id "engi-devnet-1")
 
 ;; ── real keys ───────────────────────────────────────────────────────────────
@@ -173,7 +196,14 @@
                 signed))
             (ship! [outbox0]
               (equivocate! outbox0)
-              (doseq [{:keys [msg]} (sign-out outbox0)]
+              ;; Signed first, then held. Signing is this replica's own work
+              ;; and happens now; the network round trip is what is late.
+              (let [batch (sign-out outbox0)]
+                (if (pos? delivery-delay)
+                  (js/setTimeout (fn [] (ship-now! batch)) delivery-delay)
+                  (ship-now! batch))))
+            (ship-now! [outbox]
+              (doseq [{:keys [msg]} outbox]
                 (swap! sent inc)
                 ;; out to everyone we dialled
                 (when-let [n @out-node] ((:broadcast! n) msg))
