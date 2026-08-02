@@ -908,7 +908,31 @@
                     sig (assoc :sig sig))
               [state' out] (handle-new-view (assoc state :pm pm') msg now)]
           [state' (into [{:to :all :msg msg}] out)]))
-      (propose state now)))))
+      ;; Re-cast a vote an eviction destroyed, before proposing.
+      ;;
+      ;; `handle-proposal` learned to do this and it never fired: it only runs
+      ;; when a proposal ARRIVES, and nobody re-proposes a block every replica
+      ;; already holds. The tip is the one block whose proposal will not come
+      ;; again, and the tip is exactly the block whose vote was lost.
+      ;;
+      ;; Deployed, at the stall: four replicas on one tip at height 225, same
+      ;; state root, two votes each against a quorum of three, alarm firing,
+      ;; and five manual `/step`s moving nothing. Every replica had voted
+      ;; there and could not say so.
+      ;;
+      ;; Same block, same height — `cast-vote` folds it through `fold-vote`,
+      ;; which keys by witness, so a replica that still HAS its vote produces
+      ;; nothing new here and only one that lost it speaks up.
+      (let [t (tip state)
+            h (height state)
+            hf (:hash-fn state)
+            [state out] (if (and (pos? h)
+                                 (contains? (:voted state) h)
+                                 (nil? (get-in state [:votes (hf t) (:witness state)])))
+                          (cast-vote state t now)
+                          [state []])
+            [state' out'] (propose state now)]
+        [state' (into out out')])))))
 
 (defn start
   "The first proposal.
