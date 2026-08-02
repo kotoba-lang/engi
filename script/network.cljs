@@ -39,7 +39,15 @@
             [engi.replica :as r]
             [engi.wire :as wire]))
 
-(def witnesses [:w1 :w2 :w3 :w4])
+(def witnesses
+  "The validator set. `N=7 nbb ...` to change its size.
+  
+  Fixed at four for the whole life of this harness, which made one structural
+  fact invisible: four with a quorum of three has ZERO margin under churn —
+  evict one and exactly quorum remains, so a single lost message costs a round.
+  Seven leaves six against a quorum of five and has one to spare."
+  (mapv #(keyword (str "w" %))
+        (range 1 (inc (js/parseInt (or (some-> js/process .-env .-N) "4") 10)))))
 
 (def delivery-delay
   "Milliseconds to hold a batch before delivering it, modelling an HTTP round
