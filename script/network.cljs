@@ -543,14 +543,19 @@
                    (fn [] (evict! (nth nodes (mod (quot (count (:chain @(:state (first nodes)))) 3)
                                                   (count nodes)))))
                    1000)]
-           (js/setTimeout (fn [] (js/clearInterval ev)) 5000))
+           (js/setTimeout (fn [] (js/clearInterval ev))
+                          (- (js/parseInt (or (some-> js/process .-env .-RUN_MS) "6000") 10)
+                             1000)))
          (js/setTimeout
           (fn []
             (js/clearInterval iv)
             (let [code (report nodes)]
               (doseq [n nodes] ((:close! n)))
               (js/setTimeout #(js/process.exit code) 300)))
-          6000)))
+          ;; How long the run lasts. `RUN_MS=60000 nbb ...` to hold it open —
+          ;; the deployed chain stops after a couple of hundred blocks and six
+          ;; seconds has never been long enough to reach that.
+          (js/parseInt (or (some-> js/process .-env .-RUN_MS) "6000") 10))))
      900)))
 
 (-main)
