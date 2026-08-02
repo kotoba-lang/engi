@@ -249,7 +249,7 @@
 
 ;; ── the chain ───────────────────────────────────────────────────────────────
 
-(declare adopt-own fold-vote cast-vote propose handle-new-view)
+(declare adopt-own fold-vote cast-vote propose handle-new-view tip)
 
 (defn tip [state] (peek (:chain state)))
 
@@ -600,24 +600,47 @@
              [{:to :all :msg {:type :sync-response :blocks blocks}}]
              [])]))
 
+(defn- vote-on-tip
+  "Vote for the tip when this replica has not voted at that height.
+
+  Catching up adopts blocks without voting for them, and a block everybody
+  adopted and nobody voted for can never be certified — so the chain freezes
+  at exactly the height the replicas synced to. Four deployed validators sat
+  there with thousands of proposals received, a thousand sync-responses each,
+  and ZERO votes recorded for the tip: `blocked-by: no certificate for the
+  tip` on all four at once.
+
+  Voting for it is safe and is what a caught-up replica is for. `engi.sync`
+  already refused the segment unless every block in it carried a certificate
+  for its own parent with a quorum of verifying signatures — a block that
+  arrived that way has been agreed by more replicas than this one has heard
+  from directly."
+  [state now]
+  (let [t (tip state)
+        h (:engi.block/height t)]
+    (if (or (zero? h) (contains? (:voted state) h))
+      [state []]
+      (cast-vote state t now))))
+
 (defn- handle-sync-response
-  "Adopt a segment through `engi.sync`, or refuse it whole.
+  "Adopt a segment through `engi.sync`, or refuse it whole, and vote for what
+  it leaves us on.
 
   Whole, because adopting the valid prefix of a bad segment lets a peer choose
   where this replica's history ends by appending garbage to a good answer —
   which is `engi.sync`'s reasoning, and the reason to call it rather than to
   re-implement a weaker version of it here."
-  [state {:keys [blocks]}]
+  [state {:keys [blocks]} now]
   (let [segment (vec (sort-by :engi.block/height blocks))
         {:keys [chain adopted]}
         (sync/sync-step (:hash-fn state) (:quorum state) (:chain state) segment
                         sync/default-params (:chain-id state) (:verify-fn state))]
     (if (pos? adopted)
-      [(-> state
-           (assoc :chain chain)
-           (as-> s (reduce remember-block s segment))
-           absorb-commits)
-       []]
+      (-> state
+          (assoc :chain chain)
+          (as-> s (reduce remember-block s segment))
+          absorb-commits
+          (vote-on-tip now))
       [state []])))
 
 (defn on-message
@@ -631,7 +654,7 @@
     :vote (fold-vote state msg now)
     :new-view (handle-new-view state msg now)
     :sync-request (handle-sync-request state msg)
-    :sync-response (handle-sync-response state msg)
+    :sync-response (handle-sync-response state msg now)
     [state []]))
 
 (defn on-tick

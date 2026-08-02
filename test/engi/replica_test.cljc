@@ -776,3 +776,24 @@
           s (checked-replica :w1)
           [_ out] (r/on-message s (nv :w2 7 cert) 1000)]
       (is (empty? (filter #(= :sync-request (:type (:msg %))) out))))))
+
+(deftest catching-up-votes-for-what-it-lands-on
+  (testing "adopting without voting means a block everybody has and nobody
+            voted for, which can never be certified — four deployed validators
+            sat at that tip with thousands of proposals received, a thousand
+            sync-responses each, and ZERO votes recorded for it"
+    (let [s (checked-replica :w1)
+          good (certified-child (r/tip s) 1 true)
+          [s' out] (r/on-message s {:type :sync-response :blocks [good]} 1000)]
+      (is (= 1 (r/height s')) "adopted")
+      (is (= [:vote] (mapv #(:type (:msg %)) out)) "and voted for it")
+      (is (contains? (:voted s') 1)))))
+
+(deftest catching-up-does-not-vote-twice
+  (testing "a replica that already voted at that height stays quiet, which is
+            the property the height key exists for"
+    (let [s (checked-replica :w1)
+          good (certified-child (r/tip s) 1 true)
+          [s1 _] (r/on-message s {:type :sync-response :blocks [good]} 1000)
+          [_ out] (r/on-message s1 {:type :sync-response :blocks [good]} 1001)]
+      (is (empty? (filter #(= :vote (:type (:msg %))) out))))))
