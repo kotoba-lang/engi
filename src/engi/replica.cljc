@@ -712,9 +712,19 @@
   re-implement a weaker version of it here."
   [state {:keys [blocks]} now]
   (let [segment (vec (sort-by :engi.block/height blocks))
-        {:keys [chain adopted]}
+        {:keys [chain adopted reason]}
         (sync/sync-step (:hash-fn state) (:quorum state) (:chain state) segment
-                        sync/default-params (:chain-id state) (:verify-fn state))]
+                        sync/default-params (:chain-id state) (:verify-fn state))
+        ;; Refusing a segment says nothing to anybody, correctly — and a
+        ;; replica that cannot catch up looks exactly like a replica nobody is
+        ;; answering. `engi.sync` has a closed set of reasons; this records
+        ;; which one, so the difference is one reading rather than a guess.
+        state (assoc state :last-sync
+                     {:offered (count segment)
+                      :from (:engi.block/height (first segment))
+                      :to (:engi.block/height (last segment))
+                      :adopted adopted
+                      :reason reason})]
     (if (pos? adopted)
       (-> state
           (assoc :chain chain)
