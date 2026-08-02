@@ -449,15 +449,39 @@
       (let [state (note-proposal (extend-chain state block) block
                                  :already-voted-at-this-height)
             mine (get-in state [:votes (hf block) (:witness state)])]
-        [state (if mine
-                 [{:to :all :msg (cond-> {:type :vote
+        (cond
+          mine
+          [state [{:to :all :msg (cond-> {:type :vote
                                           :witness (:witness state)
                                           :block-hash (hf block)
                                           :height h
                                           :view (:engi.vote/view mine 0)}
                                    (:engi.vote/sig mine)
-                                   (assoc :sig (:engi.vote/sig mine)))}]
-                 [])])
+                                   (assoc :sig (:engi.vote/sig mine)))}]]
+
+          ;; Voted, and no longer holding the vote. Cast it again.
+          ;;
+          ;; An evicted replica comes back with its BLOCKS and the heights it
+          ;; voted at — `replay` restores both — and with an empty `:votes`,
+          ;; because votes are memory. It then cannot re-cast, because it
+          ;; knows it already voted here, and cannot re-send, because it does
+          ;; not have the vote. A dead end, and it is invisible: the replica
+          ;; is not behind, holds the right tip, and reports nothing wrong.
+          ;;
+          ;; Deployed, all four replicas sat on the same tip at height 225
+          ;; with the same state root and exactly TWO votes each against a
+          ;; quorum of three, while the clock kept ticking. Every replica had
+          ;; voted; between them they could not produce three votes.
+          ;;
+          ;; Safe because it is the same block: `already-voted` says we voted
+          ;; at this HEIGHT, and a replica's chain IS what it voted for, so a
+          ;; proposal whose hash equals our tip is the block we voted for.
+          ;; Anything else still gets nothing, which is what stops this from
+          ;; being an equivocation.
+          (= (hf block) (hf (tip state)))
+          (cast-vote state block now)
+
+          :else [state []]))
 
       ;; Refused, and NOT adopted.
       ;;
