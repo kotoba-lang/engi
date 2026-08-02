@@ -379,8 +379,32 @@
       (not (c/direct-extends? hf parent block))
       [state []]
 
+      ;; Already voted at this height. Re-send the vote rather than saying
+      ;; nothing.
+      ;;
+      ;; Nothing here is ever retransmitted, and over a transport with no
+      ;; acknowledgements a lost vote is lost forever. The leader re-proposes
+      ;; the same block — it is a pure function of its parent, so it is the
+      ;; same block byte for byte — and every receiver stayed silent because
+      ;; it had already voted. The height could never certify. A deployed
+      ;; chain sat at height one for as long as it was watched.
+      ;;
+      ;; Re-sending is safe and is not equivocation: it is the SAME vote, for
+      ;; the same block, recovered from what this replica already recorded. A
+      ;; second vote for a DIFFERENT block at this height is still refused,
+      ;; which is the property that matters.
       (contains? (:voted state) h)
-      [(extend-chain state block) []]
+      (let [state (extend-chain state block)
+            mine (get-in state [:votes (hf block) (:witness state)])]
+        [state (if mine
+                 [{:to :all :msg (cond-> {:type :vote
+                                          :witness (:witness state)
+                                          :block-hash (hf block)
+                                          :height h
+                                          :view (:engi.vote/view mine 0)}
+                                   (:engi.vote/sig mine)
+                                   (assoc :sig (:engi.vote/sig mine)))}]
+                 [])])
 
       (not (pm/safe-to-vote? (:pm state) block #(ancestor? state %1 %2)))
       [(extend-chain state block) []]

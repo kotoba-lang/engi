@@ -723,3 +723,35 @@
     (is (= :w2 (c/leader-for witnesses 1)))
     (is (= :w3 (pm/leader-for-view witnesses 2))
         "two view changes later, somebody else could have proposed")))
+
+(deftest a-second-proposal-at-a-voted-height-gets-the-vote-again
+  (testing "nothing here is retransmitted, and over a transport with no
+            acknowledgements a lost vote is lost forever. The leader
+            re-proposes the same block — a pure function of its parent, so the
+            same block byte for byte — and every receiver stayed silent
+            because it had already voted. The height could never certify, and
+            a deployed chain sat at height one for as long as it was watched."
+    (let [leader (c/leader-for witnesses 1)
+          [_ out] (r/start (get (net) leader) 1000)
+          proposal (:msg (first out))
+          s (get (net) :w3)
+          [s1 o1] (r/on-message s proposal 1001)
+          [_ o2] (r/on-message s1 proposal 1002)]
+      (is (= 1 (count (filter #(= :vote (:type (:msg %))) o1))))
+      (is (= 1 (count (filter #(= :vote (:type (:msg %))) o2)))
+          "the same vote again, not silence")
+      (is (= (:block-hash (:msg (first (filter #(= :vote (:type (:msg %))) o1))))
+             (:block-hash (:msg (first (filter #(= :vote (:type (:msg %))) o2)))))
+          "and it is the same vote, which is why re-sending is safe"))))
+
+(deftest a-different-block-at-a-voted-height-still-gets-nothing
+  (testing "re-sending is not a licence to vote twice — that is the property
+            the height key exists for"
+    (let [leader (c/leader-for witnesses 1)
+          [_ out] (r/start (get (net) leader) 1000)
+          proposal (:msg (first out))
+          s (get (net) :w3)
+          [s1 _] (r/on-message s proposal 1001)
+          other (assoc-in proposal [:block :engi.block/proposals] ["different"])
+          [_ o2] (r/on-message s1 other 1002)]
+      (is (empty? (filter #(= :vote (:type (:msg %))) o2))))))
