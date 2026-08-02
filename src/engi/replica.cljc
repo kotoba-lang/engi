@@ -380,6 +380,20 @@
     (-> state (update :chain conj b) absorb-commits)
     state))
 
+(defn- note-proposal
+  "What happened to the last proposal, and why.
+
+  Four of this function's five outcomes produce no message, which is correct
+  and leaves nothing to read: a replica that refuses a block says so to
+  nobody. Every stall in this system has been an absence, and the absences
+  that took longest to find were the ones inside a `cond` whose branches all
+  return the same silence."
+  [state block outcome]
+  (assoc state :last-proposal
+         {:height (:engi.block/height block)
+          :hash ((:hash-fn state) block)
+          :outcome outcome}))
+
 (defn- handle-proposal
   [state {:keys [block]} now]
   (let [state (remember-block state block)
@@ -390,12 +404,13 @@
       ;; nothing to check it against — ask for what is missing rather than
       ;; voting on a block whose parent this replica has never seen
       (nil? parent)
-      [state [{:to :all :msg {:type :sync-request
+      [(note-proposal state block :no-parent)
+       [{:to :all :msg {:type :sync-request
                               :from (inc (height state))
                               :to (:engi.block/height block)}}]]
 
       (not (c/direct-extends? hf parent block))
-      [state []]
+      [(note-proposal state block :does-not-extend-its-parent) []]
 
       ;; Already voted at this height. Re-send the vote rather than saying
       ;; nothing.
@@ -412,7 +427,8 @@
       ;; second vote for a DIFFERENT block at this height is still refused,
       ;; which is the property that matters.
       (contains? (:voted state) h)
-      (let [state (extend-chain state block)
+      (let [state (note-proposal (extend-chain state block) block
+                                 :already-voted-at-this-height)
             mine (get-in state [:votes (hf block) (:witness state)])]
         [state (if mine
                  [{:to :all :msg (cond-> {:type :vote
@@ -437,10 +453,11 @@
       ;; `:by-hash` is right, because a later proposal may need it as a
       ;; parent to check against; making it the tip is not.
       (not (pm/safe-to-vote? (:pm state) block #(ancestor? state %1 %2)))
-      [state []]
+      [(note-proposal state block :locked-elsewhere) []]
 
       :else
-      (cast-vote (extend-chain state block) block now))))
+      (cast-vote (note-proposal (extend-chain state block) block :voted)
+                 block now))))
 
 (defn- fold-vote
   "Collect a vote and, on quorum, form the certificate.
