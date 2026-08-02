@@ -687,6 +687,32 @@
       (let [state (update-in state [:new-views view] (fnil assoc {}) witness
                              {:engi.nv/witness witness :engi.nv/view view
                               :engi.nv/high-qc high-qc})
+            ;; KEEP the certificate. It arrived verified — the guard above ran
+            ;; `att/verify-certificate` on it — and it was being thrown away.
+            ;;
+            ;; A replica that is evicted keeps its BLOCKS, because those are
+            ;; persisted, and loses every vote and every certificate, because
+            ;; those are memory. `replay` rebuilds a certificate for each block
+            ;; whose child it holds, since a block carries its parent's QC —
+            ;; which is every block EXCEPT the tip. So the rebuilt replica sits
+            ;; on a tip it cannot certify, and `propose` needs exactly that
+            ;; certificate. Deployed, `why-not-proposing` says `no certificate
+            ;; for the tip` in those words.
+            ;;
+            ;; It cannot ask for it either: `behind` is zero, because it is not
+            ;; behind — it has the block, it is missing the proof. Nothing in
+            ;; the protocol requests a certificate for a block you already
+            ;; hold, and every new-view arriving carried the answer.
+            ;;
+            ;; Leadership is keyed by height, so when that replica's turn comes
+            ;; the height stops moving and no other replica may take it. Every
+            ;; stall measured — deployed at 225 and here at 28 — is a replica
+            ;; that was evicted while leading the next height.
+            state (if (and high-qc
+                           (not (get-in state [:qcs (:engi.qc/block-hash high-qc)])))
+                    (assoc-in state [:qcs (:engi.qc/block-hash high-qc)]
+                              (assoc high-qc :engi.qc/origin :new-view))
+                    state)
             msgs (vals (get-in state [:new-views view]))
             ;; A new-view carries the sender's highest certificate, so it says
             ;; how far ahead that replica is. A replica behind it asks for what
