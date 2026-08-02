@@ -113,7 +113,11 @@
   "The witness that equivocates. Inside the validator set, with a real key —
   which the forger is not, and which is the whole difference between 'a
   stranger cannot lie to us' and 'a validator cannot lie to us'."
-  "w4")
+  ;; `BYZANTINE=none` takes it out, which is how you find out what the
+  ;; equivocator is costing. With four witnesses and a quorum of three, one
+  ;; Byzantine leaves exactly three honest replicas — quorum and no margin, so
+  ;; losing any one of them to an eviction stops the chain outright.
+  (or (some-> js/process .-env .-BYZANTINE) "w4"))
 
 (def equivocation-hash
   "The block w4 casts its second vote for. Nobody proposed it."
