@@ -415,6 +415,12 @@
                " root" (r/state-root s))
       (println "        last-proposal" (pr-str (:last-proposal s))
                " dropped" (pr-str (:dropped-votes s)))
+      (doseq [b (:chain s)]
+        (println "        chain-block h" (:engi.block/height b)
+                 "by" (pr-str (:engi.block/proposer b))
+                 "hash" (subs (str (:engi.block/hash b)) 0 12)))
+      (doseq [[k vs] (:votes s)]
+        (println "        bucket" (pr-str k) "=" (pr-str (sort (keys vs)))))
       (println "        votes-buckets" (count (:votes s))
                " biggest" (apply max 0 (map count (vals (:votes s))))
                " voted-at" (count (:voted s)))
