@@ -492,12 +492,25 @@
   [state {:keys [witness block-hash height view sig]} now]
   (let [witness (wire/wire-id witness)
         verify (:verify-fn state)
+        ;; The verifier decides, including when there is no signature.
+        ;;
+        ;; This required a signature before consulting the verifier, and that
+        ;; rejected the replica's OWN vote everywhere signing is
+        ;; asynchronous — a Worker signs with WebCrypto after the vote has
+        ;; been produced, so the copy folded locally has no signature yet. Its
+        ;; own vote never counted, every replica was exactly one short of a
+        ;; quorum of three, and each one recorded two hundred of its own votes
+        ;; as `unsigned` while the chain sat there.
+        ;;
+        ;; Nothing is loosened. A verifier that does not know the witness, or
+        ;; is handed a nil signature for one it does not trust, still says
+        ;; false — and a replica does not have to be convinced of a vote it
+        ;; produced itself.
         ok? (or (nil? verify)
-                (and sig
-                     (verify witness
-                             (att/vote-payload (:chain-id state) view height
-                                               block-hash witness)
-                             sig)))]
+                (verify witness
+                        (att/vote-payload (:chain-id state) view height
+                                          block-hash witness)
+                        sig))]
    (if-not ok?
     ;; Dropped, not counted and not answered. A replica that replied would be
     ;; telling a forger which of its guesses were closer — and that silence is

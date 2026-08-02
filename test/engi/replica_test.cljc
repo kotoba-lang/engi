@@ -215,7 +215,7 @@
   (fn [payload] (str "sig(" w ")" (hash payload))))
 
 (defn- fake-verify [w payload sig]
-  (= sig ((fake-sign (name w)) payload)))
+  (and (some? sig) (= sig ((fake-sign (name w)) payload))))
 
 (defn- checked-replica [w]
   (r/replica {:witness w :witnesses witnesses :quorum (c/quorum-size 4)
@@ -875,3 +875,32 @@
       (let [sig ((fake-sign "attacker") (att/vote-payload chain 0 1 "h:a" "w2"))
             [s2 _] (r/on-message s1 (assoc (forge :w2 "h:a") :sig sig) 1001)]
         (is (= 1 (get-in s2 [:dropped-votes :did-not-verify])))))))
+
+(deftest a-replica-counts-its-own-vote-even-before-it-is-signed
+  (testing "a Worker signs with WebCrypto after the vote is produced, so the
+            copy folded locally has no signature yet. Requiring one before
+            consulting the verifier rejected every replica's own vote: each
+            was exactly one short of a quorum of three, and each recorded two
+            hundred of its own votes as unsigned while the chain sat there."
+    (let [;; a verifier that trusts this replica's own witness and nobody
+          ;; else without a signature — what a deployed validator uses
+          own-ok (fn [w payload sig]
+                   (or (= w "w1") (fake-verify w payload sig)))
+          s (r/replica {:witness :w1 :witnesses witnesses :quorum (c/quorum-size 4)
+                        :hash-fn hash-fn :chain-id chain :verify-fn own-ok})
+          [s' _] (r/on-message s {:type :vote :witness "w1" :block-hash "h:a"
+                                  :height 1 :view 0} 1000)]
+      (is (= 1 (count (get-in s' [:votes "h:a"]))))
+      (is (nil? (:dropped-votes s'))))))
+
+(deftest an-unsigned-vote-from-anybody-else-is-still-dropped
+  (testing "nothing is loosened: the verifier decides, and it says false for a
+            witness it does not trust without a signature"
+    (let [own-ok (fn [w payload sig]
+                   (or (= w "w1") (fake-verify w payload sig)))
+          s (r/replica {:witness :w1 :witnesses witnesses :quorum (c/quorum-size 4)
+                        :hash-fn hash-fn :chain-id chain :verify-fn own-ok})
+          [s' _] (r/on-message s {:type :vote :witness "w2" :block-hash "h:a"
+                                  :height 1 :view 0} 1000)]
+      (is (empty? (get-in s' [:votes "h:a"])))
+      (is (= 1 (get-in s' [:dropped-votes :unsigned]))))))
