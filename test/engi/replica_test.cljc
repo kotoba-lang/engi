@@ -675,3 +675,30 @@
           b1 (:block (:msg (first out)))]
       (is (= (:block-interval r/default-params) (:engi.block/ts b1)))
       (is (not= 1000 (:engi.block/ts b1)) "and not from the caller's clock"))))
+
+(deftest a-new-view-carrying-only-the-genesis-certificate-is-accepted
+  (testing "start fabricates a certificate for genesis so the first proposal
+            has something to justify, and nobody signed it because nobody
+            voted. Requiring signatures on it refused every new-view from a
+            replica that had not yet certified anything — so replicas could
+            not tell each other they had timed out, their views drifted, no
+            two new-views shared a view, and no timeout certificate could
+            form. Four validators sat at views 5, 6, 6, 6 forever."
+    (let [g (r/tip (checked-replica :w1))
+          boot (c/qc [(c/make-vote "w1" (hash-fn g) 0)] 1 0)
+          s (checked-replica :w1)
+          [s' _] (reduce (fn [[s _] w] (r/on-message s (nv w 7 boot) 1000))
+                         [s []] [:w2 :w3 :w4])]
+      (is (= 3 (count (get-in s' [:new-views 7]))))
+      (is (= 8 (:view (:pm s'))) "and the view change happened"))))
+
+(deftest a-certificate-above-genesis-still-needs-its-signatures
+  (testing "the exception is genesis and nothing else — a certificate for
+            height 0 carries no claim about anything that was decided"
+    (let [fake {:engi.qc/block-hash "h:invented" :engi.qc/height 1
+                :engi.qc/view 1 :engi.qc/witnesses #{"w2" "w3" "w4"}
+                :engi.qc/vote-count 3}
+          s (checked-replica :w1)
+          [s' _] (reduce (fn [[s _] w] (r/on-message s (nv w 9 fake) 1000))
+                         [s []] [:w2 :w3 :w4])]
+      (is (empty? (get-in s' [:new-views 9]))))))

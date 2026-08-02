@@ -491,6 +491,22 @@
                      ;; certificate moves the forgery one level in, it does
                      ;; not stop it
                      (or (nil? high-qc)
+                         ;; ...except at genesis. `start` fabricates a
+                         ;; certificate for the genesis block so the first
+                         ;; proposal has something to justify, and nobody
+                         ;; signed it because nobody voted: genesis is the one
+                         ;; block every replica has by construction. Requiring
+                         ;; signatures on it refused every new-view whose high
+                         ;; QC was still the bootstrap one, so replicas that
+                         ;; had not yet certified anything could not tell each
+                         ;; other they had timed out. Their views drifted
+                         ;; apart, no two new-views shared a view, no timeout
+                         ;; certificate could form, and four validators sat
+                         ;; exchanging new-views forever at views 5, 6, 6, 6.
+                         ;;
+                         ;; It costs nothing: a certificate for height 0
+                         ;; carries no claim about anything that was decided.
+                         (zero? (:engi.qc/height high-qc -1))
                          (nil? (att/verify-certificate high-qc (:chain-id state)
                                                        (:quorum state) verify)))))]
     (if-not ok?
