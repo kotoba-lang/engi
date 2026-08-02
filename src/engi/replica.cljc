@@ -719,12 +719,34 @@
         ;; replica that cannot catch up looks exactly like a replica nobody is
         ;; answering. `engi.sync` has a closed set of reasons; this records
         ;; which one, so the difference is one reading rather than a guess.
+        ;; `engi.sync` returns one keyword for four different refusals, and
+        ;; `:below-quorum` is the one that hides the most: a certificate can
+        ;; be unsigned, missing a signature, carrying a bad one, or simply
+        ;; short. Reading which — and which witness — is the difference
+        ;; between a diagnosis and a third guess.
+        detail (when (and (= :below-quorum reason) (seq segment))
+                 (let [j (:engi.block/justify (first segment))
+                       v (:verify-fn state)]
+                   {:witnesses (vec (sort (:engi.qc/witnesses j #{})))
+                    :sigs (vec (sort (keys (:engi.qc/sigs j))))
+                    :views (:engi.qc/views j)
+                    :qc-view (:engi.qc/view j)
+                    :qc-height (:engi.qc/height j)
+                    :attest-says (att/verify-certificate j (:chain-id state)
+                                                         (:quorum state) v)
+                    :per-witness
+                    (when v
+                      (into {}
+                            (for [[w payload sig] (att/pending-checks
+                                                   j (:chain-id state))]
+                              [w (boolean (v w payload sig))])))}))
         state (assoc state :last-sync
-                     {:offered (count segment)
-                      :from (:engi.block/height (first segment))
-                      :to (:engi.block/height (last segment))
-                      :adopted adopted
-                      :reason reason})]
+                     (cond-> {:offered (count segment)
+                              :from (:engi.block/height (first segment))
+                              :to (:engi.block/height (last segment))
+                              :adopted adopted
+                              :reason reason}
+                       detail (assoc :detail detail)))]
     (if (pos? adopted)
       (-> state
           (assoc :chain chain)
