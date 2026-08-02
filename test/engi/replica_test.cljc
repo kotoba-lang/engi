@@ -381,8 +381,14 @@
             {:engi.qc/block-hash ph :engi.qc/height (:engi.block/height parent)
              :engi.qc/view 0 :engi.qc/witnesses #{"w2" "w3" "w4"}
              :engi.qc/vote-count 3 :engi.qc/sigs {"w2" "x" "w3" "y" "w4" "z"}})]
+    ;; The proposer is whoever leads that height, not a fixed name. Every
+    ;; block here used to say :w1, which no real chain produces — leadership
+    ;; rotates — and `engi.sync` now refuses a block whose proposer does not
+    ;; lead its height, because a sync response was the one way into a replica
+    ;; that nothing checked and the harness forger walked through it.
     (c/make-block {:height height :parent-hash ph :proposals []
-                   :proposer :w1 :ts (* 10 height) :justify q})))
+                   :proposer (c/leader-for witnesses height)
+                   :ts (* 10 height) :justify q})))
 
 (deftest a-segment-whose-certificates-do-not-verify-is-refused-whole
   (testing "engi.sync says a peer must not get to choose where this replica's

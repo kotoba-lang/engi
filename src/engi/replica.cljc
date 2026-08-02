@@ -412,6 +412,25 @@
       (not (c/direct-extends? hf parent block))
       [(note-proposal state block :does-not-extend-its-parent) []]
 
+      ;; The proposer has to be the replica whose turn it is.
+      ;;
+      ;; Nothing checked this, so a block was accepted from ANYBODY that
+      ;; extended a known parent and passed `safe-to-vote?`. The harness
+      ;; forger is not a validator and its block was adopted as the tip by
+      ;; three of four replicas once delivery was delayed twenty
+      ;; milliseconds — at zero delay the legitimate proposal reached
+      ;; everyone first and the forged one hit `already-voted-at-this-height`,
+      ;; so the check that appeared to refuse forgeries was the ordering.
+      ;;
+      ;; This is `my-turn?` read from the other side, and it inherits the
+      ;; fault-tolerance gap named there: keyed by height, a dead leader
+      ;; holds its turn and now nobody may take it. Refusing the wrong
+      ;; proposer is still right — a protocol that votes for whoever asks has
+      ;; no leader at all — and the gap belongs to the key, not to here.
+      (not= (wire/wire-id (:engi.block/proposer block))
+            (wire/wire-id (c/leader-for (:witnesses state) h)))
+      [(note-proposal state block :not-the-leader) []]
+
       ;; Already voted at this height. Re-send the vote rather than saying
       ;; nothing.
       ;;
@@ -745,7 +764,14 @@
   (let [segment (vec (sort-by :engi.block/height blocks))
         {:keys [chain adopted reason]}
         (sync/sync-step (:hash-fn state) (:quorum state) (:chain state) segment
-                        sync/default-params (:chain-id state) (:verify-fn state))
+                        ;; The witness set travels with the params so that
+                        ;; `validate-segment` can refuse a block whose
+                        ;; proposer does not lead its height. Without it a
+                        ;; sync response was the one way into a replica that
+                        ;; nothing checked.
+                        (assoc sync/default-params
+                               :witnesses (:witnesses state))
+                        (:chain-id state) (:verify-fn state))
         ;; Refusing a segment says nothing to anybody, correctly — and a
         ;; replica that cannot catch up looks exactly like a replica nobody is
         ;; answering. `engi.sync` has a closed set of reasons; this records

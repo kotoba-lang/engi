@@ -43,7 +43,8 @@
   what to ask for and what may be believed."
   (:require [engi.consensus :as c]
             [engi.attest :as att]
-            [engi.quorum :as q]))
+            [engi.quorum :as q]
+            [engi.wire :as wire]))
 
 (def default-params
   {;; the most blocks a peer may hand over at once
@@ -57,7 +58,8 @@
     :does-not-attach
     :non-contiguous
     :uncertified
-    :below-quorum})
+    :below-quorum
+    :wrong-proposer})
 
 ;; ── what to ask for ─────────────────────────────────────────────────────────
 
@@ -122,7 +124,7 @@
   uses, instead of a special case that could differ."
   ([hash-fn quorum anchor blocks params]
    (validate-segment hash-fn quorum anchor blocks params nil nil))
-  ([hash-fn quorum anchor blocks {:keys [max-batch] :as _params} chain-id verify-fn]
+  ([hash-fn quorum anchor blocks {:keys [max-batch witnesses] :as _params} chain-id verify-fn]
   (cond
     (empty? blocks) :empty-segment
     (> (count blocks) max-batch) :too-large
@@ -142,6 +144,34 @@
             (not (quorum-ok? (:engi.block/justify b) quorum chain-id verify-fn))
             :below-quorum
             (not (c/direct-extends? hash-fn prev b)) :uncertified
+
+            ;; Who proposed it. `handle-proposal` is not the only way a block
+            ;; enters a replica and it was the only one that could refuse —
+            ;; and it could not refuse this, because a sync response never
+            ;; reaches it. The harness forger sends its block as a
+            ;; `:sync-response`, and three of four replicas adopted it as
+            ;; their tip once delivery was delayed.
+            ;;
+            ;; The quorum check above does not catch it either: the forged
+            ;; block is justified by a GENESIS certificate, and genesis
+            ;; certificates are exempt from verification here because the
+            ;; bootstrap one is unsigned and refusing it left laggards unable
+            ;; to catch up at all. That exemption is what the forgery rides,
+            ;; and its signatures are the literal strings "x" "y" "z".
+            ;;
+            ;; `witnesses` is nil for callers that have not been updated,
+            ;; and then this does not fire — the same shape as `verify-fn`
+            ;; here. A caller that wants the check passes the set.
+            ;; Compared through `wire/wire-id`, not `str`. A proposer crosses
+            ;; the wire as "w1" and a witness set is held as :w1, and `str`
+            ;; makes those ":w1" and "w1" — so the check refused EVERY
+            ;; segment, including the genuine ones, which looks exactly like
+            ;; a fix when the thing you are measuring is a forgery getting in.
+            (and witnesses
+                 (not= (wire/wire-id (:engi.block/proposer b))
+                       (wire/wire-id (c/leader-for witnesses
+                                                   (:engi.block/height b)))))
+            :wrong-proposer
             :else (recur b more))))))))
 
 (defn adopt
