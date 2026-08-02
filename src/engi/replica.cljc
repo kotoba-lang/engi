@@ -292,8 +292,23 @@
 ;; ── proposing ───────────────────────────────────────────────────────────────
 
 (defn- my-turn?
-  [state h]
-  (= (:witness state) (c/leader-for (:witnesses state) h)))
+  "Whose turn it is, keyed by VIEW and not by height.
+
+  `engi.pacemaker/leader-for-view` exists for this and its docstring says why:
+  a view that produced nothing still has to hand over, or a crashed leader
+  keeps being re-elected and the chain stops. This called
+  `engi.consensus/leader-for`, which is keyed by height — and a height does
+  not advance while its leader is down, so the turn never moved. Timeouts fired
+  and view changes happened and none of it could route around the one replica
+  that was not there.
+
+  Measured on the deployed chain: four validators, quorum three of four, one
+  wiped back to genesis. The remaining three stopped at the height the dead
+  one was due to lead and sat there. A protocol that tolerates one failure in
+  four had not tolerated one failure in four."
+  [state]
+  (= (:witness state)
+     (pm/leader-for-view (:witnesses state) (:view (:pm state)))))
 
 (defn- propose
   "Build the next block on the tip, if this replica leads that height and
@@ -309,7 +324,7 @@
         parent-hash ((:hash-fn state) t)
         justify (get (:qcs state) parent-hash)]
     (if (and justify
-             (my-turn? state h)
+             (my-turn? state)
              (>= now (+ (:last-proposed-at state) (:block-interval (:params state)))))
       (let [b (c/make-block {:height h :parent-hash parent-hash
                              :proposals (:pending state)
@@ -614,7 +629,7 @@
   [state now]
   (let [g (tip state)
         h 1]
-    (if (my-turn? state h)
+    (if (my-turn? state)
       (let [b (c/make-block {:height h :parent-hash ((:hash-fn state) g)
                              :proposals (:pending state)
                              :proposer (:witness state)

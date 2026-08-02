@@ -9,6 +9,7 @@
             [engi.replica :as r]
             [engi.attest :as att]
             [engi.consensus :as c]
+            [engi.pacemaker :as pm]
             [clojure.string]
             [engi.stake :as stake]
             [engi.sync :as sync]))
@@ -56,7 +57,7 @@
   ([] (run (count witnesses) 4000))
   ([n max-steps]
    (let [rs (net n)
-         leader (c/leader-for (vec (take n witnesses)) 1)
+         leader (first (take n witnesses))
          [s0 out] (r/start (get rs leader) 1000)
          rs (assoc rs leader s0)
          [rs _ _] (deliver-all rs (mapv #(assoc % :from leader) out) 1000 max-steps)]
@@ -110,7 +111,7 @@
             here could see it, because with no timeouts firing the two keys
             are the same key. The socket harness stalled at height two."
     (let [s (get (net) :w2)
-          leader (c/leader-for witnesses 1)
+          leader (first witnesses)
           [_ out] (r/start (get (net) leader) 1000)
           proposal (:msg (first out))
           [s1 o1] (r/on-message s proposal 1001)
@@ -190,7 +191,7 @@
       (is (nil? (get-in s' [:qcs bh]))))))
 
 (deftest submitted-proposals-ride-in-the-next-block-this-replica-leads
-  (let [leader (c/leader-for witnesses 1)
+  (let [leader (first witnesses)
         s (-> (get (net) leader) (r/submit "cid-a") (r/submit "cid-b"))
         [s' out] (r/start s 1000)]
     (is (= ["cid-a" "cid-b"] (:engi.block/proposals (:block (:msg (first out))))))
@@ -524,7 +525,7 @@
     (is (nil? (r/state-root (get (net) :w1))))))
 
 (deftest committed-blocks-are-applied-in-order-exactly-once
-  (let [leader (c/leader-for witnesses 1)
+  (let [leader (first witnesses)
         rs (into {} (for [w witnesses] [w (machine-replica w)]))
         [s0 out] (r/start (get rs leader) 1000)
         rs (assoc rs leader s0)
@@ -551,7 +552,7 @@
   (testing "applying a block that is merely adopted would be applying one that
             can still be replaced, and undoing it afterwards is what the
             3-chain rule exists to make unnecessary"
-    (let [leader (c/leader-for witnesses 1)
+    (let [leader (first witnesses)
           [_ out] (r/start (machine-replica leader) 1000)
           proposal (:msg (first out))
           [s' _] (r/on-message (machine-replica :w2) proposal 1001)]
@@ -610,7 +611,7 @@
 ;; ── surviving a restart ─────────────────────────────────────────────────────
 
 (defn- chain-of-two []
-  (let [leader (c/leader-for witnesses 1)
+  (let [leader (first witnesses)
         [s0 out] (r/start (get (net) leader) 1000)
         b1 (:block (:msg (first out)))]
     [s0 b1]))
@@ -660,7 +661,7 @@
             block. When :ts came from the wall clock it did not, the votes for
             the two split, and four validators sat at height one with three
             votes across three hashes."
-    (let [leader (c/leader-for witnesses 1)
+    (let [leader (first witnesses)
           [_ a] (r/start (get (net) leader) 1000)
           [_ b] (r/start (get (net) leader) 999999)]
       (is (= (hash-fn (:block (:msg (first a))))
@@ -670,7 +671,7 @@
 (deftest a-blocks-time-comes-from-its-parent
   (testing "the rule torihiki.state imposes on itself — the header IS the
             clock — applied one level up, where the header is made"
-    (let [leader (c/leader-for witnesses 1)
+    (let [leader (first witnesses)
           [_ out] (r/start (get (net) leader) 1000)
           b1 (:block (:msg (first out)))]
       (is (= (:block-interval r/default-params) (:engi.block/ts b1)))
@@ -702,3 +703,31 @@
           [s' _] (reduce (fn [[s _] w] (r/on-message s (nv w 9 fake) 1000))
                          [s []] [:w2 :w3 :w4])]
       (is (empty? (get-in s' [:new-views 9]))))))
+
+;; ── a dead leader must not hold its turn forever ────────────────────────────
+
+(deftest leadership-follows-the-view-not-the-height
+  (testing "a height does not advance while its leader is down, so keying the
+            turn by height means the turn never moves. Four deployed
+            validators with a quorum of three out of four stopped at the
+            height the wiped one was due to lead and sat there — a protocol
+            that tolerates one failure in four, not tolerating one failure in
+            four."
+    (let [s (get (net) :w1)]
+      (is (= :w1 (pm/leader-for-view witnesses (:view (:pm s))))
+          "view 0 is w1's")
+      (let [s' (assoc-in s [:pm :view] 1)]
+        (is (= :w2 (pm/leader-for-view witnesses (:view (:pm s'))))
+            "and a view change hands it on")))))
+
+(deftest a-view-change-lets-somebody-else-propose
+  (testing "which is the point: the replica that could not propose at view 0
+            can at view 1, without the height having moved"
+    (let [leader0 (first witnesses)
+          [_ out0] (r/start (get (net) leader0) 1000)
+          [_ out1] (r/start (get (net) :w2) 1000)]
+      (is (seq out0) "w1 proposes at view 0")
+      (is (empty? out1) "w2 does not")
+      (let [w2-at-view-1 (assoc-in (get (net) :w2) [:pm :view] 1)
+            [_ out2] (r/start w2-at-view-1 1000)]
+        (is (seq out2) "and does at view 1")))))
