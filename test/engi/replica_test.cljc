@@ -730,4 +730,17 @@
       (is (empty? out1) "w2 does not")
       (let [w2-at-view-1 (assoc-in (get (net) :w2) [:pm :view] 1)
             [_ out2] (r/start w2-at-view-1 1000)]
-        (is (seq out2) "and does at view 1")))))
+        ;; ...but not for the BOOTSTRAP block. Genesis has no certificate to
+        ;; extend, so a later view has nothing to build on — and letting each
+        ;; drifting view bootstrap its own genesis child split the votes
+        ;; across as many height-one blocks as there were replicas.
+        (is (empty? out2) "bootstrap is view 0's business and nobody else's")))))
+
+(deftest only-view-zero-bootstraps
+  (testing "the deployed chain went from height a hundred to stuck at one when
+            every drifting view proposed its own genesis child"
+    (doseq [v [1 2 3 7]]
+      (doseq [w witnesses]
+        (let [s (assoc-in (get (net) w) [:pm :view] v)
+              [_ out] (r/start s 1000)]
+          (is (empty? out) (str w " proposed a genesis child at view " v)))))))

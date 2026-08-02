@@ -622,14 +622,24 @@
       (propose state now)))))
 
 (defn start
-  "The first proposal. Genesis has no certificate, so the height-1 leader
+  "The first proposal.
+
+  Bootstrap is view 0's business and nobody else's. Keying it by view like
+  every other proposal looked consistent and was not: replicas time out at
+  different moments, so as their views drift each one in turn becomes the
+  leader of ITS view, proposes its own genesis child, and the votes split
+  across as many height-one blocks as there are replicas. The deployed chain
+  went from running at height a hundred to stuck at height one.
+
+  Genesis has no certificate to extend, so there is nothing for a later view
+  to build on and no reason for a later view to try. Genesis has no certificate, so the height-1 leader
   cannot reach `propose`'s QC requirement — this is the one place a block is
   proposed without one, and it is the same exception `three-chain-commits`
   makes for genesis."
   [state now]
   (let [g (tip state)
         h 1]
-    (if (my-turn? state)
+    (if (and (zero? (:view (:pm state))) (my-turn? state))
       (let [b (c/make-block {:height h :parent-hash ((:hash-fn state) g)
                              :proposals (:pending state)
                              :proposer (:witness state)
