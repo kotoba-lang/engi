@@ -755,3 +755,24 @@
           other (assoc-in proposal [:block :engi.block/proposals] ["different"])
           [_ o2] (r/on-message s1 other 1002)]
       (is (empty? (filter #(= :vote (:type (:msg %))) o2))))))
+
+(deftest a-new-view-from-somebody-ahead-makes-a-replica-ask
+  (testing "retransmission of a proposal stops when the sender no longer needs
+            votes for it, which is exactly when a replica that missed the
+            block still does — so a laggard has no way to learn the block
+            exists. One deployed replica sat at height one while the other
+            three reached two and stopped there, because three is the quorum
+            and there was no margin left for a single lost message."
+    (let [cert (genuine-cert "h:real" 5)
+          s (checked-replica :w1)
+          [_ out] (r/on-message s (nv :w2 7 cert) 1000)]
+      (is (= [:sync-request] (mapv #(:type (:msg %)) out)))
+      (is (= 1 (:from (:msg (first out)))))
+      (is (= 5 (:to (:msg (first out))))))))
+
+(deftest a-new-view-from-somebody-level-asks-for-nothing
+  (testing "or every message would start a catch-up"
+    (let [cert (genuine-cert "h:real" 0)
+          s (checked-replica :w1)
+          [_ out] (r/on-message s (nv :w2 7 cert) 1000)]
+      (is (empty? (filter #(= :sync-request (:type (:msg %))) out))))))

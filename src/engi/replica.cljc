@@ -558,11 +558,29 @@
       (let [state (update-in state [:new-views view] (fnil assoc {}) witness
                              {:engi.nv/witness witness :engi.nv/view view
                               :engi.nv/high-qc high-qc})
-            msgs (vals (get-in state [:new-views view]))]
+            msgs (vals (get-in state [:new-views view]))
+            ;; A new-view carries the sender's highest certificate, so it says
+            ;; how far ahead that replica is. A replica behind it asks for what
+            ;; it missed.
+            ;;
+            ;; This is the only way a laggard can learn a block exists.
+            ;; Retransmission of a proposal is conditioned on the sender still
+            ;; needing votes for it, so it stops exactly when a replica that
+            ;; missed the block still needs it — and a proposal is what would
+            ;; have made it ask. One replica sat at height one while the other
+            ;; three went to two and stopped there, because three is the
+            ;; quorum and there was no margin left for a single lost message.
+            behind (- (:engi.qc/height high-qc -1) (height state))
+            ask (when (pos? behind)
+                  (when-let [r (sync/request (height state)
+                                             (:engi.qc/height high-qc)
+                                             sync/default-params)]
+                    [{:to :all :msg (assoc r :type :sync-request)}]))]
         (if-let [tc (pm/timeout-certificate (vec msgs) (:quorum state))]
-          (let [state (update state :pm pm/on-timeout-certificate tc now (:params state))]
-            (propose state now))
-          [state []])))))
+          (let [state (update state :pm pm/on-timeout-certificate tc now (:params state))
+                [state out] (propose state now)]
+            [state (into (vec ask) out)])
+          [state (vec ask)])))))
 
 (defn- handle-sync-request
   "Answer with at most `:max-batch` blocks.
