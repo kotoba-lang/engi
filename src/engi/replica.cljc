@@ -500,8 +500,17 @@
                              sig)))]
    (if-not ok?
     ;; Dropped, not counted and not answered. A replica that replied would be
-    ;; telling a forger which of its guesses were closer.
-    [state []]
+    ;; telling a forger which of its guesses were closer — and that silence is
+    ;; also why a chain whose votes are being dropped looks exactly like a
+    ;; chain whose votes are not being sent. Counted, so the two can be told
+    ;; apart without asking the sender.
+    [(-> state
+         (update-in [:dropped-votes (if sig :did-not-verify :unsigned)]
+                    (fnil inc 0))
+         (assoc :last-dropped-vote
+                {:witness witness :height height :view view
+                 :block-hash block-hash :had-sig (boolean sig)}))
+     []]
     (let [vote (cond-> (assoc (c/make-vote witness block-hash height)
                               :engi.vote/view view)
                  sig (assoc :engi.vote/sig sig))

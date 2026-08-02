@@ -863,3 +863,15 @@
         [s1 _] (r/on-message s (nv :w2 5 nil) 1000)
         [s2 _] (r/on-message s1 (nv :w3 5 nil) 1001)]
     (is (= 30 (:view (:pm s2))))))
+
+(deftest a-dropped-vote-is-counted-even-though-it-is-not-answered
+  (testing "silence is right — replying would tell a forger which guesses were
+            closer — and it is also why a chain whose votes are dropped looks
+            exactly like a chain whose votes are not sent"
+    (let [s (checked-replica :w1)
+          [s1 _] (r/on-message s (forge :w2 "h:a") 1000)]
+      (is (= 1 (get-in s1 [:dropped-votes :unsigned])))
+      (is (= "w2" (:witness (:last-dropped-vote s1))))
+      (let [sig ((fake-sign "attacker") (att/vote-payload chain 0 1 "h:a" "w2"))
+            [s2 _] (r/on-message s1 (assoc (forge :w2 "h:a") :sig sig) 1001)]
+        (is (= 1 (get-in s2 [:dropped-votes :did-not-verify])))))))
