@@ -430,7 +430,11 @@
                  (doseq [n nodes] ((:close! n)))
                  (js/setTimeout #(js/process.exit code) 300)))
              1200))
-          6000)))
+          ;; `RUN_MS=90000 nbb ...`. The deployment stops at exactly height 225
+          ;; with the torihiki machine under it, at two different tick rates,
+          ;; and script/network.cljs passes 380 blocks with a trivial machine.
+          ;; The machine is the difference nobody has run long enough to test.
+          (js/parseInt (or (some-> js/process .-env .-RUN_MS) "6000") 10))))
      900)))
 
 (-main)
