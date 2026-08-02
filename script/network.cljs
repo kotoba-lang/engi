@@ -427,6 +427,12 @@
       (println "        votes-buckets" (count (:votes s))
                " biggest" (apply max 0 (map count (vals (:votes s))))
                " voted-at" (count (:voted s)))
+      (println "        STATE  votes" (count (:votes s))
+               " new-views" (count (:new-views s))
+               " qcs" (count (:qcs s))
+               " first-vote" (count (:first-vote s))
+               " by-hash" (count (:by-hash s))
+               " verified-eq" (count (:verified-equivocations s)))
       (println "        certificates" (count (:qcs s))
                " voted at heights 1.." (apply max 0 (:voted s))
                " chain length" (count (:chain s)))))
@@ -550,7 +556,7 @@
          (let [victim (atom -1)
                ev (js/setInterval
                    (fn [] (evict! (nth nodes (mod (swap! victim inc) (count nodes)))))
-                   1000)]
+                   (js/parseInt (or (some-> js/process .-env .-EVICT_MS) "1000") 10))]
            (js/setTimeout (fn [] (js/clearInterval ev))
                           (- (js/parseInt (or (some-> js/process .-env .-RUN_MS) "6000") 10)
                              1000)))
