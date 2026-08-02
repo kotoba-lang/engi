@@ -83,6 +83,11 @@
              "height" (:engi.qc/height qc)
              "witnesses" (vec (sort (map wire-id (:engi.qc/witnesses qc))))}
       (:engi.qc/view qc) (assoc "view" (:engi.qc/view qc))
+      ;; The view each signature was made in. Without it a certificate that
+      ;; crosses the wire loses the only thing that lets its signatures be
+      ;; reconstructed, and every one of them fails to verify.
+      (:engi.qc/views qc) (assoc "views" (into {} (map (fn [[w v]] [(wire-id w) v]))
+                                               (:engi.qc/views qc)))
       ;; a stake-weighted certificate that arrives without its stake is a
       ;; certificate the receiver must re-derive or refuse
       (:engi.qc/stake qc) (assoc "stake" (:engi.qc/stake qc))
@@ -101,6 +106,12 @@
                  (vector? ws)
                  (<= (count ws) (:max-witnesses limits))
                  (every? #(str-ok? % limits) ws)
+                 (let [sg (get m "views")]
+                   (or (nil? sg)
+                       (and (map? sg)
+                            (<= (count sg) (:max-witnesses limits))
+                            (every? #(str-ok? % limits) (keys sg))
+                            (every? nat? (vals sg)))))
                  (let [sg (get m "sigs")]
                    (or (nil? sg)
                        (and (map? sg)
@@ -113,7 +124,8 @@
                  :engi.qc/vote-count (count (set ws))}
           (nat? (get m "view")) (assoc :engi.qc/view (get m "view"))
           (nat? (get m "stake")) (assoc :engi.qc/stake (get m "stake"))
-          (map? (get m "sigs")) (assoc :engi.qc/sigs (get m "sigs")))))))
+          (map? (get m "sigs")) (assoc :engi.qc/sigs (get m "sigs"))
+          (map? (get m "views")) (assoc :engi.qc/views (get m "views")))))))
 
 (defn- enc-block [b]
   {"height" (:engi.block/height b)

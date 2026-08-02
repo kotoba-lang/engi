@@ -179,3 +179,37 @@
                                    (att/lookup-verifier
                                     (into {} (map (fn [[w p s]] [[w p s] true]))
                                           (att/pending-checks q chain))))))))
+
+;; ── votes for one block are cast in different views ─────────────────────────
+
+(deftest a-certificate-verifies-signatures-made-in-different-views
+  (testing "replicas time out independently, so votes for ONE block are
+            genuinely cast in different views — 16, 16 and 51 on the deployed
+            chain. vote-payload covers the view, so those are three different
+            payloads, and a certificate that remembered only one view could
+            reconstruct only one of them. The other two failed to verify, the
+            certificate was refused :below-quorum, and the replica that needed
+            the block was refused by the check that exists to let it in."
+    (let [votes (mapv (fn [[w v]]
+                        (-> (c/make-vote w "H4" 4)
+                            (assoc :engi.vote/view v)
+                            (att/sign-vote chain v #(sign w %))))
+                      [["w1" 16] ["w2" 16] ["w3" 51]])
+          q (att/certify (c/qc votes 4 51) votes)]
+      (is (= {"w1" 16 "w2" 16 "w3" 51} (:engi.qc/views q)))
+      (is (nil? (att/verify-certificate q chain 3 verify))
+          "every signature verifies, each against the view it was made in"))))
+
+(deftest per-witness-views-survive-the-wire
+  (testing "a certificate that crosses the wire without them loses the only
+            thing that lets its signatures be reconstructed"
+    (let [votes (mapv (fn [[w v]]
+                        (-> (c/make-vote w "H4" 4)
+                            (assoc :engi.vote/view v)
+                            (att/sign-vote chain v #(sign w %))))
+                      [["w1" 16] ["w2" 16] ["w3" 51]])
+          q (att/certify (c/qc votes 4 51) votes)
+          [m _] (w/decode (w/encode {:type :new-view :witness "w1" :view 51
+                                     :high-qc q}))]
+      (is (= {"w1" 16 "w2" 16 "w3" 51} (:engi.qc/views (:high-qc m))))
+      (is (nil? (att/verify-certificate (:high-qc m) chain 3 verify))))))

@@ -83,16 +83,39 @@
        "high-view=" (:engi.qc/view high-qc -1) "\n"))
 
 (defn certify
-  "Attach the votes' signatures to a certificate, keyed by witness.
+  "Attach the votes' signatures AND the view each was signed in, keyed by
+  witness.
 
-  Stored as a map rather than a vector because a certificate's witnesses are a
-  SET — a vector would impose an order that two replicas could disagree about,
-  and ordering is exactly what this project has had to fix three times."
+  Maps rather than vectors because a certificate's witnesses are a SET — a
+  vector would impose an order that two replicas could disagree about, and
+  ordering is exactly what this project has had to fix three times.
+
+  The views are the part that was missing. `vote-payload` covers the view, so
+  a vote signed in view 16 and a vote signed in view 51 have different
+  payloads — and a certificate that remembers only one view can reconstruct
+  only one of them. Every other signature then fails to verify, the
+  certificate is refused `:below-quorum`, and a replica that needed the block
+  is refused by the check that exists to let it in.
+
+  It cannot be avoided by making the votes agree on a view: replicas time out
+  independently, so votes for one block genuinely are cast in different
+  views. The certificate has to remember which."
   [qc votes]
-  (assoc qc :engi.qc/sigs
+  (assoc qc
+         :engi.qc/sigs
          (into {} (keep (fn [v]
                           (when-let [s (:engi.vote/sig v)]
                             [(:engi.vote/witness v) s]))
+                        votes))
+         :engi.qc/views
+         ;; Only for votes that actually carry one. Recording a default of
+         ;; zero would be asserting that the vote was signed in view zero,
+         ;; which is a different claim from not knowing — and it made every
+         ;; certificate built from view-less votes unverifiable, since the
+         ;; fallback to the certificate's own view could no longer fire.
+         (into {} (keep (fn [v]
+                          (when (and (:engi.vote/sig v) (:engi.vote/view v))
+                            [(:engi.vote/witness v) (:engi.vote/view v)]))
                         votes))))
 
 (defn verify-certificate
@@ -107,7 +130,11 @@
   a browser that cannot re-verify a certificate is not a verifier."
   [qc chain-id quorum verify-fn]
   (let [witnesses (:engi.qc/witnesses qc #{})
-        sigs (:engi.qc/sigs qc)]
+        sigs (:engi.qc/sigs qc)
+        views (:engi.qc/views qc)
+        ;; Each witness's own view, falling back to the certificate's for a
+        ;; certificate built before views were recorded.
+        view-of #(get views % (:engi.qc/view qc 0))]
     (cond
       (empty? sigs) :unsigned
       :else
@@ -115,7 +142,7 @@
                                (when-let [sig (get sigs w)]
                                  (verify-fn w
                                             (vote-payload chain-id
-                                                          (:engi.qc/view qc 0)
+                                                          (view-of w)
                                                           (:engi.qc/height qc)
                                                           (:engi.qc/block-hash qc)
                                                           w)
@@ -141,11 +168,13 @@
   resolves things, then hand back a lookup. The rules stay synchronous and the
   asynchrony stays at the edge where it came from."
   [qc chain-id]
-  (let [sigs (:engi.qc/sigs qc)]
+  (let [sigs (:engi.qc/sigs qc)
+        views (:engi.qc/views qc)]
     (vec (for [w (sort (:engi.qc/witnesses qc #{}))
                :let [sig (get sigs w)]
                :when sig]
-           [w (vote-payload chain-id (:engi.qc/view qc 0) (:engi.qc/height qc)
+           [w (vote-payload chain-id (get views w (:engi.qc/view qc 0))
+                            (:engi.qc/height qc)
                             (:engi.qc/block-hash qc) w)
             sig]))))
 
