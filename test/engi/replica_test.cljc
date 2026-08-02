@@ -651,3 +651,27 @@
           twice (r/replay once [b1])]
       (is (= (r/height once) (r/height twice)))
       (is (= (count (:chain once)) (count (:chain twice)))))))
+
+;; ── a block is the same block ───────────────────────────────────────────────
+
+(deftest proposing-twice-produces-the-same-block
+  (testing "a leader that restarts and proposes again for the same height, on
+            the same parent, with the same transactions, must produce the SAME
+            block. When :ts came from the wall clock it did not, the votes for
+            the two split, and four validators sat at height one with three
+            votes across three hashes."
+    (let [leader (c/leader-for witnesses 1)
+          [_ a] (r/start (get (net) leader) 1000)
+          [_ b] (r/start (get (net) leader) 999999)]
+      (is (= (hash-fn (:block (:msg (first a))))
+             (hash-fn (:block (:msg (first b)))))
+          "proposed at wildly different moments, and the same block"))))
+
+(deftest a-blocks-time-comes-from-its-parent
+  (testing "the rule torihiki.state imposes on itself — the header IS the
+            clock — applied one level up, where the header is made"
+    (let [leader (c/leader-for witnesses 1)
+          [_ out] (r/start (get (net) leader) 1000)
+          b1 (:block (:msg (first out)))]
+      (is (= (:block-interval r/default-params) (:engi.block/ts b1)))
+      (is (not= 1000 (:engi.block/ts b1)) "and not from the caller's clock"))))

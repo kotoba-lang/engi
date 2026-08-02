@@ -13,6 +13,27 @@
   terminal whose client was compiled, deployed, and never referenced from the
   page: every part green, the whole thing never executed.
 
+  ## A block's clock is logical, so the same block is the same block
+
+  `:ts` came from the wall clock, which makes a block a function of WHEN it
+  was built. A leader that restarts and proposes again for the same height,
+  on the same parent, with the same transactions, produces a DIFFERENT block —
+  different timestamp, different hash — and the votes for the two split. Four
+  validators on Cloudflare sat at height one with three votes across three
+  hashes for exactly this reason, and persistence only narrows the window
+  rather than closing it: the write still has to win a race against eviction.
+
+  So the timestamp is derived from the parent. Proposing is now a pure
+  function of the chain, and a restarted leader re-proposes the byte-identical
+  block. Nothing has to win a race.
+
+  This is the rule `torihiki.state` already imposes on itself — the block
+  header IS the clock and nothing below it may consult a real one — applied
+  one level up, where the header is made. The cost is that time advances per
+  block rather than per second, so anything measured in it (funding, timeouts
+  inside the machine) counts blocks. That is a real difference and it is the
+  side that can be agreed on.
+
   ## Committed blocks execute, which is the entire point of ordering them
 
   A consensus protocol that agrees on an order and applies nothing has agreed
@@ -292,7 +313,13 @@
              (>= now (+ (:last-proposed-at state) (:block-interval (:params state)))))
       (let [b (c/make-block {:height h :parent-hash parent-hash
                              :proposals (:pending state)
-                             :proposer (:witness state) :ts now
+                             :proposer (:witness state)
+                             ;; From the parent, not from the clock. See the
+                             ;; namespace docstring: a block that depends on
+                             ;; when it was built is a block a restart cannot
+                             ;; reproduce.
+                             :ts (+ (:engi.block/ts t)
+                                    (:block-interval (:params state)))
                              :justify justify})
             [state' out] (adopt-own state b now)]
         [(assoc state' :pending [] :last-proposed-at now)
@@ -574,7 +601,9 @@
     (if (my-turn? state h)
       (let [b (c/make-block {:height h :parent-hash ((:hash-fn state) g)
                              :proposals (:pending state)
-                             :proposer (:witness state) :ts now
+                             :proposer (:witness state)
+                             :ts (+ (:engi.block/ts g)
+                                    (:block-interval (:params state)))
                              :justify (c/qc [(c/make-vote (:witness state)
                                                           ((:hash-fn state) g) 0)]
                                             1 0)})
