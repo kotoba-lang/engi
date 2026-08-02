@@ -57,7 +57,7 @@
   ([] (run (count witnesses) 4000))
   ([n max-steps]
    (let [rs (net n)
-         leader (first (take n witnesses))
+         leader (c/leader-for (vec (take n witnesses)) 1)
          [s0 out] (r/start (get rs leader) 1000)
          rs (assoc rs leader s0)
          [rs _ _] (deliver-all rs (mapv #(assoc % :from leader) out) 1000 max-steps)]
@@ -111,7 +111,7 @@
             here could see it, because with no timeouts firing the two keys
             are the same key. The socket harness stalled at height two."
     (let [s (get (net) :w2)
-          leader (first witnesses)
+          leader (c/leader-for witnesses 1)
           [_ out] (r/start (get (net) leader) 1000)
           proposal (:msg (first out))
           [s1 o1] (r/on-message s proposal 1001)
@@ -191,7 +191,7 @@
       (is (nil? (get-in s' [:qcs bh]))))))
 
 (deftest submitted-proposals-ride-in-the-next-block-this-replica-leads
-  (let [leader (first witnesses)
+  (let [leader (c/leader-for witnesses 1)
         s (-> (get (net) leader) (r/submit "cid-a") (r/submit "cid-b"))
         [s' out] (r/start s 1000)]
     (is (= ["cid-a" "cid-b"] (:engi.block/proposals (:block (:msg (first out))))))
@@ -525,7 +525,7 @@
     (is (nil? (r/state-root (get (net) :w1))))))
 
 (deftest committed-blocks-are-applied-in-order-exactly-once
-  (let [leader (first witnesses)
+  (let [leader (c/leader-for witnesses 1)
         rs (into {} (for [w witnesses] [w (machine-replica w)]))
         [s0 out] (r/start (get rs leader) 1000)
         rs (assoc rs leader s0)
@@ -552,7 +552,7 @@
   (testing "applying a block that is merely adopted would be applying one that
             can still be replaced, and undoing it afterwards is what the
             3-chain rule exists to make unnecessary"
-    (let [leader (first witnesses)
+    (let [leader (c/leader-for witnesses 1)
           [_ out] (r/start (machine-replica leader) 1000)
           proposal (:msg (first out))
           [s' _] (r/on-message (machine-replica :w2) proposal 1001)]
@@ -611,7 +611,7 @@
 ;; ── surviving a restart ─────────────────────────────────────────────────────
 
 (defn- chain-of-two []
-  (let [leader (first witnesses)
+  (let [leader (c/leader-for witnesses 1)
         [s0 out] (r/start (get (net) leader) 1000)
         b1 (:block (:msg (first out)))]
     [s0 b1]))
@@ -661,7 +661,7 @@
             block. When :ts came from the wall clock it did not, the votes for
             the two split, and four validators sat at height one with three
             votes across three hashes."
-    (let [leader (first witnesses)
+    (let [leader (c/leader-for witnesses 1)
           [_ a] (r/start (get (net) leader) 1000)
           [_ b] (r/start (get (net) leader) 999999)]
       (is (= (hash-fn (:block (:msg (first a))))
@@ -671,7 +671,7 @@
 (deftest a-blocks-time-comes-from-its-parent
   (testing "the rule torihiki.state imposes on itself — the header IS the
             clock — applied one level up, where the header is made"
-    (let [leader (first witnesses)
+    (let [leader (c/leader-for witnesses 1)
           [_ out] (r/start (get (net) leader) 1000)
           b1 (:block (:msg (first out)))]
       (is (= (:block-interval r/default-params) (:engi.block/ts b1)))
@@ -704,43 +704,22 @@
                          [s []] [:w2 :w3 :w4])]
       (is (empty? (get-in s' [:new-views 9]))))))
 
-;; ── a dead leader must not hold its turn forever ────────────────────────────
+;; ── leadership, and the gap that is still open ──────────────────────────────
 
-(deftest leadership-follows-the-view-not-the-height
-  (testing "a height does not advance while its leader is down, so keying the
-            turn by height means the turn never moves. Four deployed
-            validators with a quorum of three out of four stopped at the
-            height the wiped one was due to lead and sat there — a protocol
-            that tolerates one failure in four, not tolerating one failure in
-            four."
-    (let [s (get (net) :w1)]
-      (is (= :w1 (pm/leader-for-view witnesses (:view (:pm s))))
-          "view 0 is w1's")
-      (let [s' (assoc-in s [:pm :view] 1)]
-        (is (= :w2 (pm/leader-for-view witnesses (:view (:pm s'))))
-            "and a view change hands it on")))))
-
-(deftest a-view-change-lets-somebody-else-propose
-  (testing "which is the point: the replica that could not propose at view 0
-            can at view 1, without the height having moved"
-    (let [leader0 (first witnesses)
-          [_ out0] (r/start (get (net) leader0) 1000)
-          [_ out1] (r/start (get (net) :w2) 1000)]
-      (is (seq out0) "w1 proposes at view 0")
-      (is (empty? out1) "w2 does not")
-      (let [w2-at-view-1 (assoc-in (get (net) :w2) [:pm :view] 1)
-            [_ out2] (r/start w2-at-view-1 1000)]
-        ;; ...but not for the BOOTSTRAP block. Genesis has no certificate to
-        ;; extend, so a later view has nothing to build on — and letting each
-        ;; drifting view bootstrap its own genesis child split the votes
-        ;; across as many height-one blocks as there were replicas.
-        (is (empty? out2) "bootstrap is view 0's business and nobody else's")))))
-
-(deftest only-view-zero-bootstraps
-  (testing "the deployed chain went from height a hundred to stuck at one when
-            every drifting view proposed its own genesis child"
-    (doseq [v [1 2 3 7]]
-      (doseq [w witnesses]
-        (let [s (assoc-in (get (net) w) [:pm :view] v)
-              [_ out] (r/start s 1000)]
-          (is (empty? out) (str w " proposed a genesis child at view " v)))))))
+(deftest a-dead-leader-holds-its-turn-and-that-is-the-open-gap
+  (testing "keyed by height, the turn does not move while the leader is down —
+            measured on the deployed chain, where three surviving validators
+            out of four stopped at the height the wiped one was due to lead.
+            leader-for-view is the right key; deploying it stopped the chain at
+            height one instead, because view-keyed leadership needs the
+            replicas to agree about the view and nothing here makes them.
+            Recorded as a test so the gap is visible rather than remembered."
+    (is (= :w2 (c/leader-for witnesses 1)))
+    (is (= :w2 (c/leader-for witnesses 5)) "same leader for every height ≡ 1 mod 4")
+    ;; Same formula, different input — which is exactly the gap. While the
+    ;; height sits at 1 because its leader is down, a view change moves the
+    ;; view and the height does not follow, so the two answers part company
+    ;; and only the one that cannot help is consulted.
+    (is (= :w2 (c/leader-for witnesses 1)))
+    (is (= :w3 (pm/leader-for-view witnesses 2))
+        "two view changes later, somebody else could have proposed")))

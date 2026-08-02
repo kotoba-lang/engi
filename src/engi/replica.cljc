@@ -292,23 +292,28 @@
 ;; ── proposing ───────────────────────────────────────────────────────────────
 
 (defn- my-turn?
-  "Whose turn it is, keyed by VIEW and not by height.
+  "Whose turn it is, keyed by HEIGHT.
 
-  `engi.pacemaker/leader-for-view` exists for this and its docstring says why:
-  a view that produced nothing still has to hand over, or a crashed leader
-  keeps being re-elected and the chain stops. This called
-  `engi.consensus/leader-for`, which is keyed by height — and a height does
-  not advance while its leader is down, so the turn never moved. Timeouts fired
-  and view changes happened and none of it could route around the one replica
-  that was not there.
+  This is the wrong key and it is the one that works today. Keyed by height, a
+  dead leader holds its turn forever: the height does not advance while its
+  leader is down, so the turn never moves, and four deployed validators with a
+  quorum of three out of four stopped at the height the one wiped replica was
+  due to lead. A protocol that tolerates one failure in four, not tolerating
+  one failure in four.
 
-  Measured on the deployed chain: four validators, quorum three of four, one
-  wiped back to genesis. The remaining three stopped at the height the dead
-  one was due to lead and sat there. A protocol that tolerates one failure in
-  four had not tolerated one failure in four."
-  [state]
-  (= (:witness state)
-     (pm/leader-for-view (:witnesses state) (:view (:pm state)))))
+  `engi.pacemaker/leader-for-view` is the right key and says so in its own
+  docstring. Deploying it stopped the chain at height one instead, because
+  view-keyed leadership needs the replicas to AGREE about the view, and view
+  synchronisation here is a timeout certificate that forms only when enough
+  replicas happen to time out into the same view. They do not, reliably; each
+  ends up the leader of its own view and nobody is the leader of the chain.
+
+  So: height, with a stated fault-tolerance gap, over view with a stated
+  liveness failure. The fix is view synchronisation that actually converges,
+  and it is not written. Choosing the running one is not the same as thinking
+  it is correct."
+  [state h]
+  (= (:witness state) (c/leader-for (:witnesses state) h)))
 
 (defn- propose
   "Build the next block on the tip, if this replica leads that height and
@@ -324,7 +329,7 @@
         parent-hash ((:hash-fn state) t)
         justify (get (:qcs state) parent-hash)]
     (if (and justify
-             (my-turn? state)
+             (my-turn? state h)
              (>= now (+ (:last-proposed-at state) (:block-interval (:params state)))))
       (let [b (c/make-block {:height h :parent-hash parent-hash
                              :proposals (:pending state)
@@ -639,7 +644,7 @@
   [state now]
   (let [g (tip state)
         h 1]
-    (if (and (zero? (:view (:pm state))) (my-turn? state))
+    (if (my-turn? state h)
       (let [b (c/make-block {:height h :parent-hash ((:hash-fn state) g)
                              :proposals (:pending state)
                              :proposer (:witness state)
