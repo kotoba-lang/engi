@@ -135,12 +135,17 @@
              (:engi.vote/sig v)))
 
 (defn make-node [w]
+  ;; No sign-fn: the replica produces an UNSIGNED vote and the transport signs
+  ;; it on the way out, which is what a Worker does — WebCrypto is
+  ;; asynchronous and the consensus seam is not. The signed copy is folded
+  ;; back. Modelling this is the last structural difference between here and
+  ;; the deployment, and the two before it — eviction and catch-up — each hid
+  ;; a real defect that only showed once modelled.
   (let [state (atom (r/replica {:witness w
                                 :witnesses witnesses
                                 :quorum (c/quorum-size (count witnesses))
                                 :hash-fn hash-fn
                                 :chain-id chain-id
-                                :sign-fn (sign-as w)
                                 :verify-fn verify-fn
                                 :machine machine}))
         registry (atom {})
@@ -148,8 +153,27 @@
         recv (atom 0)
         out-node (atom nil)]
     (letfn [(now [] (.getTime (js/Date.)))
-            (ship! [outbox]
-              (doseq [{:keys [msg]} outbox]
+            (sign-out [outbox]
+              ;; Signed here rather than by the replica, then folded back —
+              ;; the transport's job, because this is where the key is used.
+              (let [signed (mapv (fn [{:keys [msg] :as m}]
+                                   (if (= :vote (:type msg))
+                                     (assoc m :msg
+                                            (assoc msg :sig
+                                                   ((sign-as w)
+                                                    (att/vote-payload
+                                                     chain-id (:view msg) (:height msg)
+                                                     (:block-hash msg) (wire/wire-id w)))))
+                                     m))
+                                 outbox)]
+                (doseq [{:keys [msg]} signed
+                        :when (and (:sig msg) (= :vote (:type msg)))]
+                  (let [[s' _] (r/on-message @state msg (now))]
+                    (reset! state s')))
+                signed))
+            (ship! [outbox0]
+              (equivocate! outbox0)
+              (doseq [{:keys [msg]} (sign-out outbox0)]
                 (swap! sent inc)
                 ;; out to everyone we dialled
                 (when-let [n @out-node] ((:broadcast! n) msg))
@@ -160,6 +184,10 @@
               ;; same height for a block that does not exist. Signed properly:
               ;; the point is a validator misbehaving, not a forgery.
               (when (= (wire/wire-id w) byzantine)
+                ;; Reads the outbox BEFORE the transport signs it, so the twin
+                ;; is built from the same unsigned vote and signed here — the
+                ;; equivocation has to be as well-formed as the honest vote or
+                ;; it is testing the codec instead of the protocol.
                 (doseq [{:keys [msg]} outbox
                         :when (= :vote (:type msg))]
                   (let [twin (assoc msg :block-hash equivocation-hash
@@ -174,8 +202,7 @@
               (swap! recv inc)
               (let [[s' out] (r/on-message @state msg (now))]
                 (reset! state s')
-                (ship! out)
-                (equivocate! out)))]
+                (ship! out)))]
       (let [wss (ws/WebSocketServer. #js {:port (port-of w)})
             n (atom 0)]
         (.on wss "connection"
@@ -204,8 +231,7 @@
                   (when-let [n @out-node] ((:tick! n)))
                   (let [[s' out] (r/on-tick @state (now))]
                     (reset! state s')
-                    (ship! out)
-                    (equivocate! out)))
+                    (ship! out)))
          :start! (fn []
                    (let [[s' out] (r/start @state (now))]
                      (reset! state s')
@@ -304,6 +330,29 @@
 ;; `catch-up!` wipes one replica back to genesis mid-run, which is what
 ;; /reset does to a deployed one.
 
+(defn evict!
+  "Rebuild a replica the way a Durable Object comes back: everything in memory
+  is gone and only the persisted BLOCKS return, through engi.replica/replay.
+
+  This is the third difference between here and the deployment, after HTTP and
+  after signing that happens later than the vote. It is the one that costs
+  nothing to model and had not been modelled: a deployed validator is evicted
+  and rebuilt constantly, and what it loses is every vote it has collected and
+  every certificate it has formed."
+  [node]
+  (let [old @(:state node)
+        chain (vec (rest (:chain old)))]
+    (reset! (:state node)
+            (r/replay (r/replica {:witness (:witness node)
+                                  :witnesses witnesses
+                                  :quorum (c/quorum-size (count witnesses))
+                                  :hash-fn hash-fn
+                                  :chain-id chain-id
+                                  :sign-fn (sign-as (:witness node))
+                                  :verify-fn verify-fn
+                                  :machine machine})
+                      chain))))
+
 (defn catch-up-test! [nodes]
   (let [victim (nth nodes 2)]
     (println "")
@@ -384,9 +433,17 @@
                            (reduce (:apply-fn machine) ((:init-fn machine)) prefix))))
                       nodes)
         roots-agree? (apply = roots-at)
+        ;; Genesis is exempt: the certificate `start` fabricates for it has
+        ;; one witness and no signatures, and after an eviction `replay` puts
+        ;; it back into :qcs from the first persisted block. Asserting that
+        ;; every certificate is signed failed on that one — the assertion was
+        ;; wrong, not the certificate.
         signed-certs? (every? (fn [n]
                                 (let [s @(:state n)]
-                                  (every? #(att/signed? (val %)) (:qcs s))))
+                                  (every? (fn [[_ q]]
+                                            (or (zero? (:engi.qc/height q -1))
+                                                (att/signed? q)))
+                                          (:qcs s))))
                               nodes)]
     (println "")
     (println "  common committed prefix:" shortest "blocks")
@@ -436,7 +493,13 @@
        (doseq [n nodes] ((:start! n)))
        (forge!)
        (let [iv (js/setInterval (fn [] (doseq [n nodes] ((:tick! n)))) 120)]
-         (js/setTimeout (fn [] (catch-up-test! nodes)) 2500)
+         ;; Evict somebody every second, which is what Cloudflare does to a
+         ;; Durable Object under this kind of traffic.
+         (let [ev (js/setInterval
+                   (fn [] (evict! (nth nodes (mod (quot (count (:chain @(:state (first nodes)))) 3)
+                                                  (count nodes)))))
+                   1000)]
+           (js/setTimeout (fn [] (js/clearInterval ev)) 5000))
          (js/setTimeout
           (fn []
             (js/clearInterval iv)
