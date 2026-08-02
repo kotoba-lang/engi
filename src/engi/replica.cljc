@@ -583,6 +583,42 @@
          (into [{:to :all :msg {:type :proposal :block b}}] out)])
       [state []])))
 
+(defn replay
+  "Adopt blocks this replica already accepted, without re-verifying them.
+
+  A replica that keeps its state in memory and is restarted comes back at
+  genesis, and a leader that comes back at genesis proposes a FRESH block for
+  a height it already proposed. Every restart adds another incompatible
+  candidate, no two votes are for the same decision, and quorum can never
+  form. Four validators on Cloudflare did exactly that: three votes, three
+  block hashes, one height. In one process it cannot happen because nothing
+  restarts, which is why the harness ran to a hundred blocks while the
+  deployment could not pass one.
+
+  So a deployment persists what it adopted and replays it here. Not
+  re-verified, for the same reason `torihiki.state/apply-block` has a replay
+  mode and `engi.sync` takes its verifier as an option: re-checking is
+  re-litigating a decision this replica already made and recorded.
+
+  Three things are restored and each of them matters:
+
+  - the chain and the machine, by folding — that is what `extend-chain` does
+  - the certificates, so a leader can propose on the tip again instead of
+    sitting on a chain it cannot extend
+  - **the heights this replica has already voted at.** Without that, a
+    restart votes a second time at a height it already voted at, which is
+    equivocation — the one crime this system slashes for, committed by
+    accident, against itself."
+  [state blocks]
+  (reduce (fn [s b]
+            (let [s (-> s (remember-block b) (extend-chain b))
+                  j (:engi.block/justify b)]
+              (cond-> (update s :voted conj (:engi.block/height b))
+                j (-> (assoc-in [:qcs (:engi.qc/block-hash j)] j)
+                      (update :pm pm/on-qc j)))))
+          state
+          (sort-by :engi.block/height blocks)))
+
 (defn submit
   "Queue a proposal (a TransferBody CID) for the next block this replica
   leads. Bounded, because an unbounded mempool is a memory attack that needs

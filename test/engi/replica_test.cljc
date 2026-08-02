@@ -606,3 +606,48 @@
           deadline (:deadline (:pm s1))
           [_ out] (r/on-tick s1 (inc deadline))]
       (is (= [:new-view] (mapv #(:type (:msg %)) out))))))
+
+;; ── surviving a restart ─────────────────────────────────────────────────────
+
+(defn- chain-of-two []
+  (let [leader (c/leader-for witnesses 1)
+        [s0 out] (r/start (get (net) leader) 1000)
+        b1 (:block (:msg (first out)))]
+    [s0 b1]))
+
+(deftest a-restarted-replica-comes-back-where-it-was
+  (testing "a replica that comes back at genesis proposes a fresh block for a
+            height it already proposed, and every restart adds another
+            incompatible candidate — three votes, three block hashes, one
+            height, quorum forever out of reach"
+    (let [[_ b1] (chain-of-two)
+          fresh (get (net) :w2)
+          back (r/replay fresh [b1])]
+      (is (= 1 (r/height back)))
+      (is (= (hash-fn b1) (hash-fn (r/tip back)))))))
+
+(deftest a-restarted-replica-does-not-vote-twice-at-a-height
+  (testing "equivocation — the one crime this system slashes for — committed
+            by accident, against itself"
+    (let [[_ b1] (chain-of-two)
+          back (r/replay (get (net) :w2) [b1])
+          [_ out] (r/on-message back {:type :proposal
+                                      :block (assoc b1 :engi.block/ts 999)} 2000)]
+      (is (empty? (filter #(= :vote (:type (:msg %))) out))))))
+
+(deftest a-restarted-leader-can-propose-on-the-tip
+  (testing "without the certificates back, a leader sits on a chain it cannot
+            extend and the restart is only half a recovery"
+    (let [[_ b1] (chain-of-two)
+          back (r/replay (get (net) :w2) [b1])]
+      (is (some? (get-in back [:qcs (:engi.qc/block-hash (:engi.block/justify b1))]))
+          "the certificate b1 carried for its parent")
+      (is (some? (:high-qc (:pm back))) "and the pacemaker knows about it"))))
+
+(deftest replay-is-idempotent
+  (testing "a boot that lists storage twice must not build the chain twice"
+    (let [[_ b1] (chain-of-two)
+          once (r/replay (get (net) :w2) [b1])
+          twice (r/replay once [b1])]
+      (is (= (r/height once) (r/height twice)))
+      (is (= (count (:chain once)) (count (:chain twice)))))))
