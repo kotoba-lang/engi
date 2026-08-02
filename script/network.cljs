@@ -539,9 +539,17 @@
        (let [iv (js/setInterval (fn [] (doseq [n nodes] ((:tick! n)))) 120)]
          ;; Evict somebody every second, which is what Cloudflare does to a
          ;; Durable Object under this kind of traffic.
-         (let [ev (js/setInterval
-                   (fn [] (evict! (nth nodes (mod (quot (count (:chain @(:state (first nodes)))) 3)
-                                                  (count nodes)))))
+         ;; Round robin on a counter, not on the chain length.
+         ;;
+         ;; Keyed off the chain, the victim is `(quot height 3) mod 4` — so
+         ;; the moment the chain STOPS, the victim stops moving too, and the
+         ;; same replica is wiped every second for the rest of the run. That
+         ;; is the replica that has to propose next, and it can never keep
+         ;; anything long enough to do it. The harness was holding the door
+         ;; shut on the stall it was supposed to be measuring.
+         (let [victim (atom -1)
+               ev (js/setInterval
+                   (fn [] (evict! (nth nodes (mod (swap! victim inc) (count nodes)))))
                    1000)]
            (js/setTimeout (fn [] (js/clearInterval ev))
                           (- (js/parseInt (or (some-> js/process .-env .-RUN_MS) "6000") 10)
