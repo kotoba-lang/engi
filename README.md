@@ -1,5 +1,23 @@
 # engi
 
+> ## The consensus layer moved to [`kotoba-lang/inga`](https://github.com/kotoba-lang/inga) (2026-08-03)
+>
+> `engi.{consensus,quorum,pacemaker,replica,sync,wire,net,attest,stake,parity}`
+> — chained HotStuff, the pacemaker, catch-up sync, the wire codec, the
+> WebSocket transport, certificate attestation and the bond market — are now
+> `inga.*`. So are `script/network.cljs` and the torihiki harness.
+>
+> The reason is in this repo's own `consensus.cljc` docstring: *a consensus
+> layer that imports either application becomes "a consensus layer for exactly
+> one application".* It had grown three consumers. Superproject
+> ADR-2608038000 D1.
+>
+> **engi does not depend on inga.** The remaining namespaces — `core`,
+> `crypto`, `store`, `protocol`, `metrics` — required nothing from the
+> consensus set, which is why the cut was clean. ENGI/EN is a mutual-credit
+> ledger over kotobase.net graphs; running it *on* inga is future work, not
+> something this repo does today.
+
 **ENGI/EN mutual-credit ledger over kotobase.net, now with an L1** —
 implements
 [ADR-2607101100](https://github.com/com-junkawasaki/root/blob/main/90-docs/adr/2607101100-engi-mutual-credit-kotobase-native-design.md)
