@@ -16,7 +16,6 @@
  {;; JVM tests -- only `engi.core-test` (the pure `.cljc` core) runs here;
   ;; the crypto/store/protocol/live tests are `.cljs` (need npm deps) and
   ;; are picked up by shadow-cljs's :node-test instead (`npm run test:cljs`).
-  :parity {:main-opts ["-m" "engi.parity"]}
   :test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
