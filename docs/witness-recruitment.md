@@ -23,7 +23,7 @@ workload riding on this consensus today.
 1. Hold a `did:key` identity (self-generated, no registration with the
    operator required).
 2. **For the `:ordering` role, post nothing.** The bond floor for ordering
-   is **0** (`engi.stake/bootstrap-ordering-min-bond`) — see "Bond
+   is **0** (`inga.stake/bootstrap-ordering-min-bond`) — see "Bond
    requirement" below for why, and for what would change it. For the
    `:recompute` role, bond external collateral (USDC on Base L2, reusing
    the existing kotobase-ecosystem off-ramp boundary,
@@ -80,7 +80,7 @@ floor gets revisited with real data instead of a guess.
 
 **The honest cost, stated rather than buried:** an unbonded witness set has
 **no Sybil resistance**. Anyone can mint arbitrarily many `did:key`s for
-free. `engi.stake/quorum-met?` therefore returns
+free. `inga.stake/quorum-met?` therefore returns
 `{:basis :counted-unbonded :sybil-resistant? false}` in that regime — a
 **liveness arrangement among an enumerated roster, not Byzantine security**,
 and the code refuses to let a caller read it as the latter. Do not run this
@@ -91,7 +91,7 @@ regime once there is value at stake; that is what the trigger is for.
 Here the value at risk *is* already denominated in the bond asset: a buyer
 paid real USDC for an inference, and the witness attests it was computed
 honestly. A fixed floor is straightforwardly correct, and it applies from
-the first paid request. `engi.stake/default-bond-policy` deliberately leaves
+the first paid request. `inga.stake/default-bond-policy` deliberately leaves
 this **nil** rather than inventing a number — the floor belongs to whoever
 custodies the compute payments (cloud-murakumo), and a nil floor means the
 role is **not admissible** until a policy supplies one (fail-closed).
@@ -128,18 +128,59 @@ Do not treat participation as an investment with an expected yield.
 
 ## Risks (read before considering real participation)
 
-- **This is early-stage, experimental infrastructure.** `engi.consensus`
-  and `engi.stake` are single-process-simulation-tested only as of this
-  draft — no real multi-node network deployment, no external security
-  audit, no long-running production history.
+- **This is early-stage, experimental infrastructure.** The consensus and
+  staking namespaces moved to [`kotoba-lang/inga`](https://github.com/kotoba-lang/inga)
+  on 2026-08-03 (`inga.consensus` / `inga.stake` / `inga.power`); they run
+  over real WebSockets in inga's own harness but have **no production
+  deployment, no external security audit, and no long-running history**.
 - **Your bond can be slashed** for equivocation (signing two conflicting
-  votes at the same height) — this is automatic and unappealable by
-  design (ADR-2607994000 Decision #5): the evidence is a cryptographic
-  fact, not a judgment call. Run your signing key carefully — a
-  compromised or duplicated signing key is the realistic way this happens,
-  not deliberate misbehavior.
+  votes at the same height), and for nothing else. Silence, network
+  failure, censorship, disagreeing with a majority and declining to judge
+  are all explicitly NOT slashable (ADR-2607994000 Decision #5,
+  ADR-2608055000). Run your signing key carefully — a compromised or
+  duplicated signing key is the realistic way this happens, not deliberate
+  misbehavior.
+
+- **Read this one before committing funds: the CHAIN cannot check the
+  proof, so a human key can act on a claim.** `inga.stake` and
+  `inga.power` verify equivocation evidence cryptographically off-chain,
+  and `inga.power` refuses a slash whose evidence is missing, names
+  someone else, fails signature verification, or has already been punished.
+  The escrow contract holding your collateral **cannot re-run that check**:
+  EVM's `ecrecover` is secp256k1-only and Ed25519 verification is not
+  implemented on-chain. So on-chain, a slash is an assertion by the
+  `arbiter` key, not a proof.
+
+  What stands between you and a baseless confiscation, as of the
+  2026-08-05 rewrite of `engi-witness-escrow`:
+
+  - a **timelock** (≥1 day, ≤30 days) between the claim and any movement
+    of funds, with the evidence reference published at claim time — you
+    learn of an accusation, and can answer it, before the money moves;
+  - a **guardian** key, separate from the arbiter, that can veto a pending
+    slash but can never create one, and which rotates itself so the
+    arbiter cannot remove it;
+  - **vetoed evidence is spent** — the same claim cannot be resubmitted.
+
+  That is forced delay, forced publicity and split authority. **It is not
+  adjudication**, and you should not treat it as such: two colluding keys
+  can still confiscate a bond that no proof supports. The permanent fix is
+  on-chain verification of the proof itself, at which point both keys
+  should disappear rather than be narrowed. Until then, assess who holds
+  those keys as carefully as you assess the protocol.
 - **No guaranteed liquidity or return of principal.** Unbonding has a
-  mandatory delay (`unbond-delay-epochs`, currently 3) before withdrawal.
+  mandatory delay (`unbond-delay-epochs`, currently 3) before withdrawal,
+  and a **pending slash blocks withdrawal** for as long as the timelock
+  plus a 7-day execution window — after which anyone, not just the
+  operator, may expire the proposal and unblock your exit.
+
+  Two things the 2026-08-05 escrow rewrite fixed, which you would
+  otherwise have had to take on trust: the unbonding delay now has an
+  **immutable 30-day ceiling** that governance cannot raise, and your
+  maturity deadline is **snapshot when you request unbonding**, so a later
+  change to the delay cannot extend an exit already in progress. Before
+  that, one call could have frozen every bond holder out of their own
+  funds permanently.
 - **No regulatory or legal review has been performed** on any of this —
   anyone considering real participation, on either side, should treat that
   as entirely open and get their own advice before committing real funds.
