@@ -168,6 +168,21 @@ Do not treat participation as an investment with an expected yield.
   on-chain verification of the proof itself, at which point both keys
   should disappear rather than be narrowed. Until then, assess who holds
   those keys as carefully as you assess the protocol.
+
+- **The arbiter can also freeze your exit, not just take your bond.** A
+  pending slash blocks withdrawal. `expireSlash` bounds any single
+  proposal — anyone, not just the operator, can clear a stale one — but it
+  does not bound a *sequence*. An arbiter willing to keep re-proposing,
+  with a fresh evidence reference each time (which costs it nothing), can
+  keep you from exiting indefinitely, in cycles of roughly the slash
+  timelock plus a 7-day execution window. The guardian can veto each one,
+  but only if it is present and willing every cycle.
+
+  No arrangement of the contract's functions closes this. Any bond that
+  can be slashed can be frozen by an accusation, and the only thing that
+  makes an accusation accountable is being able to **check** it — exactly
+  what the contract cannot do today. Assume, when you bond, that your
+  ability to leave depends on the arbiter choosing not to do this.
 - **No guaranteed liquidity or return of principal.** Unbonding has a
   mandatory delay (`unbond-delay-epochs`, currently 3) before withdrawal,
   and a **pending slash blocks withdrawal** for as long as the timelock
