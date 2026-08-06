@@ -86,6 +86,24 @@
     (doseq [e (entries)]
       (is (inga-chain/valid-advance? (chain/advance alice e))))))
 
+(deftest the-mirrored-predicate-cannot-drift-from-ingas
+  (testing "engi.pool admits against engi's copy and inga halts against its
+            own; a rule added to either side has to show up here"
+    (let [grid (for [author [nil "" "  " alice 7]
+                     seq* [nil -1 0 1 1.5 "0"]
+                     prev [nil "bafyparent" 9]
+                     entry [nil "" "bafyentry" 9]]
+                 {:author author :seq seq* :prev prev :entry entry})
+          disagreements (remove (fn [a] (= (chain/valid-advance? a)
+                                           (inga-chain/valid-advance? a)))
+                                grid)]
+      (is (= [] (vec disagreements))
+          "every combination of the grid, not a hand-picked handful")
+      (is (< 100 (count grid)) "and the grid is worth calling one")
+      (testing "the check is not vacuous — both say yes to some and no to others"
+        (is (some chain/valid-advance? grid))
+        (is (some (complement chain/valid-advance?) grid))))))
+
 ;; ── end to end: an engi transfer becomes committed state ───────────────────
 
 (defn- committed

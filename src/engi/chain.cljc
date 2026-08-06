@@ -42,7 +42,28 @@
   head from here to there; whether it should have is the application's
   question, answered before it votes — `inga.chain`'s docstring draws that
   line and this side does not cross it."
-  (:require [ipld.core :as ipld]))
+  (:require [clojure.string :as str]
+            [ipld.core :as ipld]))
+
+(defn valid-advance?
+  "Is this advance one `inga.state` could apply? Shape only — an entry's
+  validity is the application's question, answered before it votes.
+
+  **This mirrors `inga.chain/valid-advance?` on purpose, and the copy is the
+  lesser evil.** engi does not depend on inga at runtime (the README's line,
+  and the reason the consensus cut was clean), so `engi.pool` cannot call
+  inga's copy to decide what it will admit. Two predicates that can drift is
+  the real cost; `engi.chain-test` pays it down by asserting the two agree
+  over every combination of a grid, so a rule added on either side turns into
+  a failing test rather than a proposal that passes admission here and halts
+  a replica there."
+  [{:keys [author seq prev entry]}]
+  (boolean
+   (and (string? author) (not (str/blank? author))
+        (nat-int? seq)
+        (or (nil? prev) (string? prev))
+        (string? entry)
+        (if (zero? seq) (nil? prev) (some? prev)))))
 
 (def entry-fields
   "The fields an entry consists of, in `canonical-entry`'s order.

@@ -34,7 +34,7 @@
                       ;; would prove that the stub agrees with the test.
                       io.github.kotoba-lang/inga
                       {:git/url "https://github.com/kotoba-lang/inga.git"
-                       :git/sha "9bc81ae13868874c1d9e391456e05ec04d00dcac"}}
+                       :git/sha "f93c01d872feabe09a1faef9875feff3a8cf0a9a"}}
          :main-opts ["-m" "cognitect.test-runner"]}
 
   ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).

@@ -791,20 +791,32 @@ live-test/engi/live_test.cljs LIVE integration test against PRODUCTION
 ## Testing
 
 ```bash
-clojure -M:test        # engi.core-test only (pure, JVM, no npm needed)
+clojure -M:test        # the .cljc namespaces on the JVM (core, metrics, chain, pool)
 clojure -M:lint         # clj-kondo, src+test+live-test
 
 npm install
-npm run test:cljs       # engi.core-test + engi.crypto-test + engi.protocol-test
-                         # (fake in-memory kotobase client, no network) — CI runs this.
+npm run test:cljs       # the same .cljc ones on ClojureScript, plus crypto /
+                         # protocol / store (fake in-memory kotobase client, no
+                         # network)
 npm run test:live       # LIVE integration test against PRODUCTION kotobase.net —
                          # mints throwaway did:key agents, writes/reads real (if
-                         # disposable) data. NOT run by CI — run manually.
+                         # disposable) data. Run manually.
 ```
 
-CI (`.github/workflows/ci.yml`) runs `clojure -M:test` + `clojure -M:lint` +
-`npm run test:cljs` on every push/PR. It deliberately does NOT run
-`npm run test:live`.
+`npm run test:cljs` did not exist until 2026-08-06: package.json had no
+`scripts` at all and no `shadow-cljs` devDependency, `@ipld/dag-cbor` was
+missing, the generated `shadow-cljs.edn` had been committed by a cleanup sweep
+with a stale `:ns-regexp` and an absolute path out of one machine's
+`~/.gitlibs`, and the output was named `.js` under `"type": "module"`. So the
+cljs half of a repo whose whole point is `.cljc` portability ran on one
+runtime. The generator now derives its source paths from
+`clojure -Spath -A:test` — `-A:test` because `engi.chain-test` and
+`engi.pool-test` drive a real `inga.state` machine and inga is a test-only
+dependency.
+
+`.github/workflows/ci.yml` names those three commands, but Actions are
+disabled workspace-wide (superproject ADR-2607300900) — the file is inert and
+the gates that run live in `scripts/fleet-ci/`.
 
 ## Consensus: safety and liveness are separate namespaces
 
