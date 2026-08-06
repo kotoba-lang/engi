@@ -1,2 +1,5 @@
 /node_modules
 /.cpcache
+/.shadow-cljs
+/out
+/shadow-cljs.edn
