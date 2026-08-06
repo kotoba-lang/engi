@@ -11,14 +11,30 @@
 {:paths ["src"]
  :deps {io.github.kotoba-lang/kotobase-client
         {:git/url "https://github.com/kotoba-lang/kotobase-client.git"
-         :git/sha "bbebe33d6888c915b64b32e5fc68720fac3aa97e"}}
+         :git/sha "bbebe33d6888c915b64b32e5fc68720fac3aa97e"}
+        ;; `engi.chain` only. It addresses an entry so a consensus proposal
+        ;; has something to name (superproject ADR-2608038000 H1). Pure
+        ;; `.cljc` and dependency-light, and `engi.core` still requires
+        ;; NOTHING -- the property that makes it the portable half.
+        io.github.kotoba-lang/io-ipld
+        {:git/url "https://github.com/kotoba-lang/io-ipld.git"
+         :git/sha "e08dc3b2ab705be292e388cd1ad136381544a041"}}
  :aliases
- {;; JVM tests -- only `engi.core-test` (the pure `.cljc` core) runs here;
-  ;; the crypto/store/protocol/live tests are `.cljs` (need npm deps) and
-  ;; are picked up by shadow-cljs's :node-test instead (`npm run test:cljs`).
+ {;; JVM tests -- `engi.core-test` and `engi.chain-test` (the pure `.cljc`
+  ;; halves) run here; the crypto/store/protocol/live tests are `.cljs` (need
+  ;; npm deps) and are picked up by shadow-cljs's :node-test instead
+  ;; (`npm run test:cljs`).
   :test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
-                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                      ;; TEST ONLY, and deliberately so: this is the direction
+                      ;; the ADR expects (engi is inga's first consumer), but
+                      ;; what is being proved is that an engi entry lands as
+                      ;; committed state in a real inga machine. A stub inga
+                      ;; would prove that the stub agrees with the test.
+                      io.github.kotoba-lang/inga
+                      {:git/url "https://github.com/kotoba-lang/inga.git"
+                       :git/sha "9bc81ae13868874c1d9e391456e05ec04d00dcac"}}
          :main-opts ["-m" "cognitect.test-runner"]}
 
   ;; clj-kondo as a Clojars lib (no Homebrew/system install needed).
