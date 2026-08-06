@@ -1,0 +1,8 @@
+{:source-paths ["test" "live-test" "src" "/Users/junkawasaki/.gitlibs/libs/io.github.kotoba-lang/kotobase-client/bbebe33d6888c915b64b32e5fc68720fac3aa97e/src"]
+ :builds
+ {:test {:target :node-test
+         :output-to "out/test.js"
+         :ns-regexp "^engi\\.(core|crypto|protocol|consensus|stake)-test$"}
+  :live-test {:target :node-test
+              :output-to "out/live-test.js"
+              :ns-regexp "^engi\\.live-test$"}}}
