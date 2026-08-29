@@ -5,8 +5,8 @@
 ;; `engi.store` / `engi.protocol` are cljs-only: they depend on
 ;; `kotoba-lang/kotobase-client` (the canonical kotobase.net Datom-plane
 ;; client this org already uses everywhere else), which itself is cljs-only
-;; (npm `@noble/curves`/`@noble/hashes`/`@ipld/dag-cbor` — the SAME crypto
-;; stack every other kotobase.net writer in this org uses; no second,
+;; (npm `@noble/curves`/`@ipld/dag-cbor` plus `org-nist-sha2` for SHA-256 —
+;; the SAME crypto stack every other kotobase.net writer in this org uses; no
 ;; divergent `kotoba-lang/ed25519` JVM dependency is introduced here).
 {:paths ["src"]
  :deps {io.github.kotoba-lang/kotobase-client
@@ -18,7 +18,10 @@
         ;; NOTHING -- the property that makes it the portable half.
         io.github.kotoba-lang/io-ipld
         {:git/url "https://github.com/kotoba-lang/io-ipld.git"
-         :git/sha "e08dc3b2ab705be292e388cd1ad136381544a041"}}
+         :git/sha "e08dc3b2ab705be292e388cd1ad136381544a041"}
+        io.github.kotoba-lang/org-nist-sha2
+        {:git/url "https://github.com/kotoba-lang/org-nist-sha2.git"
+         :git/sha "e7c1b250adf3291ef99424fa85d8e7381cb086fb"}}
  :aliases
  {;; JVM tests -- `engi.core-test` and `engi.chain-test` (the pure `.cljc`
   ;; halves) run here; the crypto/store/protocol/live tests are `.cljs` (need
