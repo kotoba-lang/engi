@@ -23,10 +23,10 @@
   the full body would require every auditor to also have the original
   TransferBody on hand, which the ADR's own schema doesn't persist."
   (:require ["@noble/curves/ed25519.js" :refer [ed25519]]
-            ["@noble/hashes/sha2.js" :refer [sha256]]
             [kotobase.cid :as cid]
             [kotobase.cacao :as cacao]
-            [engi.core :as core]))
+            [engi.core :as core]
+            [sha2.core :as sha2]))
 
 ;; ── identity ─────────────────────────────────────────────────────────────
 
@@ -110,7 +110,7 @@
       false)
     (catch :default _ false)))
 
-(defn hex [^js bytes]
-  (apply str (map #(-> % (.toString 16) (.padStart 2 "0")) (array-seq bytes))))
+(defn- u8->vec [^js u8] (vec (js/Array.from u8)))
 
-(defn sha256-hex [^string s] (hex (sha256 (cid/text->bytes s))))
+(defn sha256-hex [^string s]
+  (sha2/sha256-hex (u8->vec (cid/text->bytes s))))
