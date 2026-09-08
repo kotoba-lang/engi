@@ -43,7 +43,7 @@
   whole point; do not read an :unobserved as a zero."
   (:require ["process" :as process]
             [cljs.pprint :as pprint]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [engi.crypto :as crypto]
             [engi.metrics :as metrics]
             [engi.store :as store]

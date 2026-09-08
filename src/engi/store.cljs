@@ -19,7 +19,7 @@
   is exactly what this repo's live integration test
   (`test/engi/live_test.cljs`) checks against production and reports
   verbatim; see that ns and the README for the observed result."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [kotobase.client :as client]
             [kotobase.cid :as cid]
             [kotobase.cacao :as cacao]))

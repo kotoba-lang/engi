@@ -16,10 +16,10 @@
   keyed by graph CID, and parses `tx_edn` well enough for the fixed shape
   `engi.store/entity->tx-edn` produces (one flat entity map, every value
   token whitespace-free — did:key/CID/base64url/base64 alphabets and plain
-  numbers never contain a space, so a single `clojure.string/split` on
+  numbers never contain a space, so a single `str/split` on
   whitespace is a faithful, exact tokenizer here — no general EDN reader
   needed)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [kotobase.cid :as cid]))
 
 (defn- strip-brackets

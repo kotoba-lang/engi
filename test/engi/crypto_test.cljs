@@ -1,7 +1,7 @@
 (ns engi.crypto-test
   "Ed25519 sign/verify + CID round-trip tests (real @noble/curves, no
   network — pure crypto)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [cljs.test :refer-macros [deftest is testing]]
             [engi.crypto :as crypto]))
 
