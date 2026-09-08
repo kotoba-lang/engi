@@ -42,7 +42,7 @@
   head from here to there; whether it should have is the application's
   question, answered before it votes — `inga.chain`'s docstring draws that
   line and this side does not cross it."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [ipld.core :as ipld]))
 
 (defn valid-advance?
