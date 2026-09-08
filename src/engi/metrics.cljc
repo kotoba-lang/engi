@@ -64,7 +64,7 @@
   and the response body are unit-testable on every runtime and shared
   byte-for-byte with whatever hosts them, the same discipline `engi.core` and
   `engi.stake` already hold."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 ;; ── stages ───────────────────────────────────────────────────────────────────
 

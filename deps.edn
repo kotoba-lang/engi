@@ -9,7 +9,12 @@
 ;; the SAME crypto stack every other kotobase.net writer in this org uses; no
 ;; divergent `kotoba-lang/ed25519` JVM dependency is introduced here).
 {:paths ["src"]
- :deps {io.github.kotoba-lang/kotobase-client
+ :deps {
+        ;; kotoba.lang.text, not clojure.string. Pinned as an explicit floor:
+        ;; tools.deps takes the NEWEST sha it is shown, so without a floor here
+        ;; this repo silently rides whatever a sibling happens to name.
+        io.github.kotoba-lang/text {:git/sha "73bdb13ae7a3d004b44bca08be03a3191157a38f"}
+       io.github.kotoba-lang/kotobase-client
         {:git/url "https://github.com/kotoba-lang/kotobase-client.git"
          :git/sha "bbebe33d6888c915b64b32e5fc68720fac3aa97e"}
         ;; `engi.chain` only. It addresses an entry so a consensus proposal
