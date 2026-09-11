@@ -1,7 +1,7 @@
-#!/usr/bin/env nbb
-;; Generates shadow-cljs.edn's :source-paths from `clojure -Spath -A:test` --
+#!/usr/bin/env kbb
+;; Generates shadow-cljs.edn's :source-paths from `kbb -Spath -A:test` --
 ;; pulls in every git-dep src dir at the EXACT SHA deps.edn pins, so the cljs
-;; build tests against the same versions `clojure -M:test` would (same
+;; build tests against the same versions `kbb -M:test` would (same
 ;; convention as kotoba-lang/prolly-tree, kotoba-lang/kotobase-peer).
 ;; shadow-cljs.edn is gitignored -- regenerate before every cljs run, never
 ;; hand-edit, never commit. (It was committed once anyway, by a cleanup sweep
@@ -39,7 +39,7 @@
 (def cp-mod (js/require "node:child_process"))
 
 (def cp
-  (str/trim (.toString (.execSync cp-mod "clojure -Spath -A:test") "utf8")))
+  (str/trim (.toString (.execSync cp-mod "kbb -Spath -A:test") "utf8")))
 
 (def dirs
   ;; `distinct` because -A:test puts "test" on the classpath as well, and a
@@ -62,4 +62,4 @@
                      "              :output-to \"out/live-test.cjs\"\n"
                      "              :ns-regexp \"^engi\\\\.live-test$\"}}}\n"))
 
-(println "wrote shadow-cljs.edn with" (count dirs) "source dirs from clojure -Spath -A:test")
+(println "wrote shadow-cljs.edn with" (count dirs) "source dirs from kbb -Spath -A:test")

@@ -1,5 +1,5 @@
 (ns engi.metrics-test
-  "Pure `.cljc` -- runs under `clojure -M:test` (JVM) and shadow-cljs alike,
+  "Pure `.cljc` -- runs under `kbb -M:test` (JVM) and shadow-cljs alike,
   same as engi.core-test / engi.stake-test."
   (:require #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing]])
