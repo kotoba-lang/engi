@@ -74,7 +74,7 @@ revisiting it rather than a number chosen to look prudent.
 the operator. As of 2026-07-25 that count is measurable rather than
 assumed — `engi.metrics/funnel-from-entities` reports
 `:external-counterparties` from the ledger itself, and
-`bin/engi_metrics.cljs` runs it against live kotobase.net. When that stops
+`bin/engi_metrics.cljk` runs it against live kotobase.net. When that stops
 being empty, there is something for an equivocation to extract, and the
 floor gets revisited with real data instead of a guess.
 
