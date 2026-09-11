@@ -512,7 +512,7 @@ the instrumentation-0 problem in a new place.
 ```bash
 # report the persisted half from a live kotobase.net graph
 ENGI_SECRET_KEY_B64=<base64 ed25519 seed> \
-  nbb --classpath "src:$(clojure -Spath | tr ':' '\n' | grep kotobase-client)" \
+  kbb --backend sci --classpath "src:$(kbb -Spath | tr ':' '\n' | grep kotobase-client)" \
       bin/engi_metrics.cljk --json
 ```
 
@@ -709,7 +709,7 @@ single uniform floor.
 
 ```
 src/engi/core.cljk       pure ledger logic — NO I/O, NO crypto, NO wall clock.
-                          Runs identically under `clojure -M:test` (JVM) and cljs.
+                          Runs identically under `kbb -M:test` (JVM) and cljs.
 src/engi/consensus.cljc   L1 — chained HotStuff BFT (block/vote/QC shape,
                           quorum arithmetic, 3-chain commit rule, leader
                           rotation). Pure, same platform-portability as core.
@@ -791,8 +791,8 @@ live-test/engi/live_test.cljk LIVE integration test against PRODUCTION
 ## Testing
 
 ```bash
-clojure -M:test        # the .cljc namespaces on the JVM (core, metrics, chain, pool)
-clojure -M:lint         # clj-kondo, src+test+live-test
+kbb -M:test        # the .cljc namespaces on the JVM (core, metrics, chain, pool)
+kbb -M:lint         # clj-kondo, src+test+live-test
 
 npm install
 npm run test:cljs       # the same .cljc ones on ClojureScript, plus crypto /
@@ -810,7 +810,7 @@ with a stale `:ns-regexp` and an absolute path out of one machine's
 `~/.gitlibs`, and the output was named `.js` under `"type": "module"`. So the
 cljs half of a repo whose whole point is `.cljc` portability ran on one
 runtime. The generator now derives its source paths from
-`clojure -Spath -A:test` — `-A:test` because `engi.chain-test` and
+`kbb -Spath -A:test` — `-A:test` because `engi.chain-test` and
 `engi.pool-test` drive a real `inga.state` machine and inga is a test-only
 dependency.
 
@@ -883,8 +883,8 @@ The consensus layer is `.cljc` and runs on the JVM and on ClojureScript. That
 is verified, not asserted:
 
 ```bash
-clojure -M:parity
-nbb --classpath src -e "(require '[engi.parity :as p]) (p/report)"
+kbb -M:parity
+kbb --backend sci --classpath src -e "(require '[engi.parity :as p]) (p/report)"
 # both must print the same digest
 ```
 

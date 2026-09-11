@@ -1,7 +1,7 @@
 (ns engi.live-test
   "LIVE integration test against PRODUCTION kotobase.net (ADR-2607101100 task
   step 3). NOT run by CI (see .github/workflows/ci.yml) — run manually with
-  `npm run test:live` / `bb test-live`.
+  `npm run test:live` / `kbb -M:test-live`.
 
   Mints two FRESH throwaway did:key agents (nothing pre-registered, nothing
   reused across runs — every run gets brand-new keys, so this never

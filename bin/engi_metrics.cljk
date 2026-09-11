@@ -14,7 +14,7 @@
   Usage (nbb, per CLAUDE.md's nbb-only script-host rule):
 
     ENGI_SECRET_KEY_B64=<base64 ed25519 secret key> \\
-      nbb --classpath src:<kotobase-client-src> bin/engi_metrics.cljk [opts]
+      kbb --backend sci --classpath src:<kotobase-client-src> bin/engi_metrics.cljk [opts]
 
   opts:
     --endpoint URL        default https://kotobase.net
