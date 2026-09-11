@@ -5,7 +5,7 @@
   all the actual invariant logic lives in `engi.core` (pure) and
   `engi.crypto` (signing), this ns just wires them to `engi.store` I/O so
   the whole handshake can be exercised against a FAKE in-memory client in
-  tests (see test/engi/protocol_test.cljs) and the REAL kotobase.net client
+  tests (see test/engi/protocol_test.cljk) and the REAL kotobase.net client
   identically (test/engi/live_test.cljs) — no branching on client type
   anywhere in this file.
 

@@ -513,7 +513,7 @@ the instrumentation-0 problem in a new place.
 # report the persisted half from a live kotobase.net graph
 ENGI_SECRET_KEY_B64=<base64 ed25519 seed> \
   nbb --classpath "src:$(clojure -Spath | tr ':' '\n' | grep kotobase-client)" \
-      bin/engi_metrics.cljs --json
+      bin/engi_metrics.cljk --json
 ```
 
 **Independence is not inferred.** `:external-counterparties` is only computed
@@ -567,7 +567,7 @@ spender `:finalizations 1`, persisted receiver `:counter-commits 1`).
 1. **Cross-agent reads 401 against production kotobase.net today.**
    `engi.store/reader-client` (`:public-reads? true`, no CACAO) gets a bare
    `401 {"ok":false,"error":"Unauthorized"}` reading a graph it doesn't own
-   — live-probed 2026-07-09 (see `live-test/engi/live_test.cljs` ns
+   — live-probed 2026-07-09 (see `live-test/engi/live_test.cljk` ns
    docstring). The apex requires a CACAO on every `datomic.*` call, and
    only the graph owner's own key can mint one satisfying "graph scope ==
    issuer DID". So `validate-proposal!`'s design (the RECEIVER
@@ -708,7 +708,7 @@ single uniform floor.
 ## Layout
 
 ```
-src/engi/core.cljc       pure ledger logic — NO I/O, NO crypto, NO wall clock.
+src/engi/core.cljk       pure ledger logic — NO I/O, NO crypto, NO wall clock.
                           Runs identically under `clojure -M:test` (JVM) and cljs.
 src/engi/consensus.cljc   L1 — chained HotStuff BFT (block/vote/QC shape,
                           quorum arithmetic, 3-chain commit rule, leader
@@ -717,15 +717,15 @@ src/engi/stake.cljc       permissionless witness admission — bonding,
                           stake-weighted quorum, equivocation detection +
                           slashing, liveness active-set removal, unbond
                           delay. Pure, same platform-portability as core.
-src/engi/crypto.cljs     Ed25519 sign/verify + CID (transfer-id/entry-hash).
+src/engi/crypto.cljk     Ed25519 sign/verify + CID (transfer-id/entry-hash).
                          cljs-only: @noble/curves/@noble/hashes, the SAME
                          crypto stack kotobase-client already uses for CACAO —
                          no second, divergent crypto dependency introduced.
-src/engi/store.cljs      kotobase.net I/O. Built on kotobase-client's
+src/engi/store.cljk      kotobase.net I/O. Built on kotobase-client's
                          `kotobase.client`/`kotobase.cid` directly (NOT a
                          hand-rolled mint/post — this is a new library, not
                          a pre-kotobase-client-extraction one like genko).
-src/engi/protocol.cljs   propose!/validate!/counter-commit!/finalize!/audit-agent! —
+src/engi/protocol.cljk   propose!/validate!/counter-commit!/finalize!/audit-agent! —
                          wires core+crypto+store; every fn takes an explicit
                          client so tests can inject a fake one.
 test/engi/core-test.cljc     pure logic (JVM + cljs).
@@ -748,7 +748,7 @@ test/engi/protocol-test.cljs full propose->validate->counter-commit->finalize
                               handshake, credit-limit rejection, stale-prev
                               (race) rejection, fork audit — fake client, no
                               network.
-live-test/engi/live_test.cljs LIVE integration test against PRODUCTION
+live-test/engi/live_test.cljk LIVE integration test against PRODUCTION
                                kotobase.net (see "Testing" below — NOT run
                                by CI).
 ```

@@ -53,7 +53,7 @@
      ARE durable: they are credit and debit entries in the two agents' own
      kotobase graphs. So the BOTTOM of the funnel can be recomputed by anyone
      with read access, from data they did not have to trust the emitter for.
-     This is the auditable half, and it is what `bin/engi_metrics.cljs`
+     This is the auditable half, and it is what `bin/engi_metrics.cljk`
      reports against live kotobase.net.
 
   Keeping the two halves distinguishable is the point: an emitted count is an

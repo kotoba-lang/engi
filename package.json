@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:cljs": "nbb gen-shadow-cljs-edn.cljs && shadow-cljs compile test && node out/test.cjs",
-    "test:live": "nbb gen-shadow-cljs-edn.cljs && shadow-cljs compile live-test && node out/live-test.cjs"
+    "test:cljs": "nbb gen-shadow-cljs-edn.cljk && shadow-cljs compile test && node out/test.cjs",
+    "test:live": "nbb gen-shadow-cljs-edn.cljk && shadow-cljs compile live-test && node out/live-test.cjs"
   },
   "devDependencies": {
     "shadow-cljs": "^2.28.0",
