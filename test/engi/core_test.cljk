@@ -2,7 +2,7 @@
   "Pure-logic unit tests for `engi.core` — no crypto, no I/O, runs identically
   under `kbb -M:test` (JVM) and shadow-cljs :node-test."
   (:require [engi.core :as core]
-            #?(:clj [clojure.test :refer [deftest is testing]]
+            #?(:clj [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer-macros [deftest is testing]])))
 
 ;; ── canonical serialization determinism ────────────────────────────────────

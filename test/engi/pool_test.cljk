@@ -7,7 +7,7 @@
   one this id names — and that a real `inga.state` machine driven by
   `pool/resolver` reaches the same committed head as one driven by a hand-fed
   lookup."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [engi.chain :as chain]
             [engi.core :as engi]
             [engi.pool :as pool]
