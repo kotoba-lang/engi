@@ -6,7 +6,7 @@
   `inga` is a test dependency here on purpose. What is worth proving is that
   an engi chain and an inga-committed head are the SAME chain — a stub inga
   would only prove the stub agrees with this file."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [engi.chain :as chain]
             [engi.core :as engi]
             [inga.chain :as inga-chain]
