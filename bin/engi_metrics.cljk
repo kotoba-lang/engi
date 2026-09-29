@@ -11,7 +11,7 @@
   nobody measures can only be asserted about. `engi.metrics` gives the funnel
   its shape; this script is what actually points it at real data.
 
-  Usage (nbb, per CLAUDE.md's nbb-only script-host rule):
+  Usage (nbb, per AGENTS.md's nbb-only script-host rule):
 
     ENGI_SECRET_KEY_B64=<base64 ed25519 secret key> \\
       kbb --backend sci --classpath src:<kotobase-client-src> bin/engi_metrics.cljk [opts]
